@@ -113,8 +113,9 @@ class LavalinkService:
         if load_type == LoadType.PLAYLIST:
             name = clean(result.playlist_info.name) or "playlist"
             return LoadOutcome("playlist", tracks, name, source, used_fallback, query)
-        kind = "search" if load_type == LoadType.SEARCH else "track"
-        return LoadOutcome(kind, tracks[:1], None, source, used_fallback, query)
+        if load_type == LoadType.SEARCH:
+            return LoadOutcome("search", tracks, None, source, used_fallback, query)
+        return LoadOutcome("track", tracks[:1], None, source, used_fallback, query)
 
     async def load(self, guild_id: int, query: str) -> LoadOutcome:
         """Resolve a link or search text.

@@ -16,6 +16,8 @@ plugins/
 *.sqlite3
 data/bot.db
 data/backups/
+data/bot.db-shm
+data/bot.db-wal
 
 # Logs and runtime files
 logs/

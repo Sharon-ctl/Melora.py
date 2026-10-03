@@ -356,11 +356,11 @@ class GuildPlayer:
             return False
         try:
             outcome = await self.services.loader.load(self.guild_id, search_query)
-            seen = {h.title.lower() for h in self.queue.get_history(50)}
+            seen = {clean_track_title(h.title).lower() for h in self.queue.get_history(50)}
             if last_track:
-                seen.add(last_track.title.lower())
+                seen.add(clean_track_title(last_track.title).lower())
             for item in self.queue:
-                seen.add(item.title.lower())
+                seen.add(clean_track_title(item.title).lower())
 
             added_items: list[QueueItem] = []
             bot_avatar = self.services.backend.bot_avatar_url() if hasattr(self.services.backend, "bot_avatar_url") else None
@@ -892,10 +892,10 @@ class GuildPlayer:
             current_track = self.current
             search_query = current_track.artist or current_track.title
             outcome = await self.services.loader.load(self.guild_id, search_query)
-            seen = {h.title.lower() for h in self.queue.get_history(50)}
-            seen.add(current_track.title.lower())
+            seen = {clean_track_title(h.title).lower() for h in self.queue.get_history(50)}
+            seen.add(clean_track_title(current_track.title).lower())
             for item in self.queue:
-                seen.add(item.title.lower())
+                seen.add(clean_track_title(item.title).lower())
 
             candidates: list[QueueItem] = []
             bot_avatar = self.services.backend.bot_avatar_url() if hasattr(self.services.backend, "bot_avatar_url") else None

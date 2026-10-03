@@ -613,17 +613,8 @@ class Music(commands.Cog):
     @app_commands.guild_only()
     async def autoplay(self, interaction: discord.Interaction, enabled: bool | None = None) -> None:
         player = self._control_gate(interaction)
-        guild_id = interaction.guild_id or 0
         new_state = (not player.autoplay) if enabled is None else enabled
         player.set_autoplay(new_state)
-
-        storage = getattr(self.bot, "storage", None)
-        if storage is not None:
-            try:
-                await storage.update_guild_settings(guild_id, autoplay=new_state)
-            except StorageError as exc:
-                log.debug("guild=%s could not persist autoplay setting: %s", guild_id, exc)
-
         await reply(interaction, messages.autoplay_toggled(new_state))
 
     @app_commands.command(name="similar", description="Queue up to 5 tracks similar to the current song")

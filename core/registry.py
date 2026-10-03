@@ -84,7 +84,7 @@ class PlayerRegistry:
                     s = await storage.get_guild_settings(guild_id)
                     player.is_247 = bool(s.voice_247_channel_id)
                     player.restore_queue_enabled = bool(s.restore_queue)
-                    player.autoplay = bool(s.autoplay)
+                    player.autoplay = False
                     player.volume = min(100, max(0, s.default_volume))
                     player.dj_role_id = s.dj_role_id
                     player.dj_only = bool(s.dj_only)

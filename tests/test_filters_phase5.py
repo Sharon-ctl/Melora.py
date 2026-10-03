@@ -192,3 +192,81 @@ async def test_autoplay_failure_limit(services: PlayerServices):
     player.shutdown()
     assert player.autoplay is False
     assert player.autoplay_failures == 0
+
+
+@pytest.mark.anyio
+async def test_autoplay_disabled_by_default_stops_after_single_track(services: PlayerServices):
+    guild_id = 1005
+    await services.backend.connect(guild_id, 100)
+    player = GuildPlayer(guild_id, 100, 200, services)
+    assert player.autoplay is False
+
+    track = make_track(1, title="Single Song")
+    item = QueueItem.from_track(track, 42)
+    res = await player.enqueue([item])
+    assert res.started
+    assert player.current is not None
+    assert len(player.queue) == 0
+
+    # Advancing when autoplay is False should stop audio and not queue anything
+    started = await player._advance_locked()
+    assert started is False
+    assert player.current is None
+    assert len(player.queue) == 0
+    assert player.autoplay is False
+    player.shutdown()
+
+
+@pytest.mark.anyio
+async def test_autoplay_populates_batch_into_queue(services: PlayerServices):
+    guild_id = 1006
+    await services.backend.connect(guild_id, 100)
+
+    # Loader that returns 5 distinct search candidates
+    class MultiSearchLoader(FakeLoader):
+        async def load(self, gid: int, query: str):
+            tracks = [make_track(100 + i, title=f"Autoplay Track {i}") for i in range(1, 6)]
+            from types import SimpleNamespace
+            return SimpleNamespace(tracks=tracks, kind="search")
+
+    custom_services = PlayerServices(
+        backend=services.backend,
+        loader=MultiSearchLoader(),
+        cfg=services.cfg,
+    )
+    player = GuildPlayer(guild_id, 100, 200, custom_services)
+    player.set_autoplay(True)
+
+    last_track = QueueItem.from_track(make_track(99, title="Initial Song"), 42)
+    result = await player._try_autoplay_locked(last_track)
+    assert result is True
+    # 1 track started playing, 4 tracks remain in queue (batch of 5)
+    assert player.current is not None
+    assert player.current.title == "Autoplay Track 1"
+    assert len(player.queue) == 4
+    assert [item.title for item in player.queue] == [f"Autoplay Track {i}" for i in range(2, 6)]
+    player.shutdown()
+
+
+def test_lavalink_service_to_outcome_search_preserves_tracks():
+    from unittest.mock import MagicMock
+    from core.lavalink_service import LavalinkService
+    from lavalink.server import LoadResult, LoadType
+
+    svc = LavalinkService(MagicMock(), make_config())
+    t1 = make_track(1, title="T1")
+    t2 = make_track(2, title="T2")
+    t3 = make_track(3, title="T3")
+
+    # Search returns all tracks
+    search_res = LoadResult(LoadType.SEARCH, [t1, t2, t3], None)
+    search_outcome = svc._to_outcome(search_res, "ytsearch", False, "query")
+    assert search_outcome.kind == "search"
+    assert len(search_outcome.tracks) == 3
+
+    # Direct track returns only 1 track
+    track_res = LoadResult(LoadType.TRACK, [t1, t2], None)
+    track_outcome = svc._to_outcome(track_res, "direct", False, None)
+    assert track_outcome.kind == "track"
+    assert len(track_outcome.tracks) == 1
+
