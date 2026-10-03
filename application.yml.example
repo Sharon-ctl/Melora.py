@@ -36,11 +36,11 @@ lavalink:
     resamplingQuality: HIGH
 
     # Smoothness
-    bufferDurationMs: 600
-    frameBufferDurationMs: 5000
-    trackStuckThresholdMs: 10000
+    bufferDurationMs: 800
+    frameBufferDurationMs: 10000
+    trackStuckThresholdMs: 15000
     useSeekGhosting: true
-    playerUpdateInterval: 5
+    playerUpdateInterval: 10
 
     youtubeSearchEnabled: true
     soundcloudSearchEnabled: true
