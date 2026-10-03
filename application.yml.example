@@ -1,0 +1,89 @@
+server:
+  port: 2333
+  address: 127.0.0.1
+  http2:
+    enabled: false
+
+lavalink:
+  plugins:
+    - dependency: "dev.lavalink.youtube:youtube-plugin:f45bbb7aebfcbc1c553769e04af6cd43afa8b7c3"
+      snapshot: true
+  server:
+    password: "123"
+    sources:
+      youtube: false
+      soundcloud: true
+      bandcamp: true
+      http: false
+      local: false
+      twitch: false
+      vimeo: false
+      nico: false
+    filters:
+      volume: true
+      equalizer: true
+      karaoke: true
+      timescale: true
+      tremolo: true
+      vibrato: true
+      rotation: true
+      distortion: true
+      channelMix: true
+      lowPass: true
+
+    # Audio quality
+    opusEncodingQuality: 10
+    resamplingQuality: HIGH
+
+    # Smoothness
+    bufferDurationMs: 600
+    frameBufferDurationMs: 5000
+    trackStuckThresholdMs: 10000
+    useSeekGhosting: true
+    playerUpdateInterval: 5
+
+    youtubeSearchEnabled: true
+    soundcloudSearchEnabled: true
+    gc-warnings: true
+
+plugins:
+  youtube:
+    enabled: true
+    allowSearch: true
+    allowDirectVideoIds: true
+    allowDirectPlaylistIds: true
+    # MUSIC = ytmsearch, WEB = metadata only, TV = the only client that plays audio.
+    # If TV ever breaks, re-add ANDROID_VR and WEBEMBEDDED here as fallbacks.
+    clients:
+      - MUSIC
+      - WEB
+      - TV
+    clientOptions:
+      WEB:
+        playback: false
+    oauth:
+      enabled: true
+      refreshToken: "refresh-token-here"
+    remoteCipher:
+      url: "https://cipher.kikkia.dev/"
+      userAgent: "my-music-bot"
+
+logging:
+  file:
+    path: ./logs/
+  level:
+    root: INFO
+    lavalink: INFO
+    dev.lavalink.youtube.http.YoutubeOauth2Handler: INFO
+    dev.lavalink.youtube.clients.skeleton.StreamingNonMusicClient: ERROR
+  request:
+    enabled: true
+    includeClientInfo: true
+    includeHeaders: false
+    includeQueryString: true
+    includePayload: false
+    maxPayloadLength: 1000
+  logback:
+    rollingpolicy:
+      max-file-size: 10MB
+      max-history: 7

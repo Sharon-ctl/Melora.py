@@ -1,0 +1,34 @@
+{
+  "buckets": {
+    "commands": {
+      "rate": 5,
+      "per": 10.0
+    },
+    "play": {
+      "rate": 4,
+      "per": 10.0
+    },
+    "queue": {
+      "rate": 8,
+      "per": 10.0
+    },
+    "library": {
+      "rate": 6,
+      "per": 10.0
+    },
+    "views": {
+      "rate": 4,
+      "per": 10.0
+    },
+    "components": {
+      "rate": 3,
+      "per": 3.0
+    },
+    "guild": {
+      "rate": 30,
+      "per": 10.0
+    }
+  },
+  "max_keys": 10000,
+  "idle_ttl": 60.0
+}

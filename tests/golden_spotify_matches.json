@@ -1,0 +1,158 @@
+[
+  {
+    "scenario": "live_vs_studio",
+    "description": "Studio track preferred over live performance",
+    "target": {
+      "title": "Hotel California",
+      "artists": ["Eagles"],
+      "duration_ms": 391000
+    },
+    "candidates": [
+      {
+        "id": "cand_live",
+        "title": "Hotel California (Live at The Forum)",
+        "author": "Eagles",
+        "duration": 425000,
+        "is_ytm": false
+      },
+      {
+        "id": "cand_studio",
+        "title": "Hotel California",
+        "author": "Eagles - Topic",
+        "duration": 391200,
+        "is_ytm": true
+      }
+    ],
+    "expected_match_id": "cand_studio"
+  },
+  {
+    "scenario": "remix_vs_original",
+    "description": "Original track preferred over unrequested remix",
+    "target": {
+      "title": "Levitating",
+      "artists": ["Dua Lipa"],
+      "duration_ms": 203000
+    },
+    "candidates": [
+      {
+        "id": "cand_remix",
+        "title": "Levitating (The Blessed Madonna Remix)",
+        "author": "Dua Lipa",
+        "duration": 250000,
+        "is_ytm": false
+      },
+      {
+        "id": "cand_original",
+        "title": "Levitating",
+        "author": "Dua Lipa - Topic",
+        "duration": 203400,
+        "is_ytm": true
+      }
+    ],
+    "expected_match_id": "cand_original"
+  },
+  {
+    "scenario": "wrong_duration",
+    "description": "Candidate with duration diff greater than tolerance is rejected in favor of exact duration",
+    "target": {
+      "title": "Blinding Lights",
+      "artists": ["The Weeknd"],
+      "duration_ms": 200000
+    },
+    "candidates": [
+      {
+        "id": "cand_wrong_dur",
+        "title": "Blinding Lights (Extended)",
+        "author": "The Weeknd",
+        "duration": 270000,
+        "is_ytm": false
+      },
+      {
+        "id": "cand_exact_dur",
+        "title": "Blinding Lights",
+        "author": "The Weeknd - Topic",
+        "duration": 200500,
+        "is_ytm": true
+      }
+    ],
+    "expected_match_id": "cand_exact_dur"
+  },
+  {
+    "scenario": "wrong_artist",
+    "description": "Candidate with wrong artist is rejected even if title matches",
+    "target": {
+      "title": "Shape of You",
+      "artists": ["Ed Sheeran"],
+      "duration_ms": 233000
+    },
+    "candidates": [
+      {
+        "id": "cand_wrong_artist",
+        "title": "Shape of You",
+        "author": "Random Cover Channel",
+        "duration": 233100,
+        "is_ytm": false
+      },
+      {
+        "id": "cand_correct_artist",
+        "title": "Shape of You",
+        "author": "Ed Sheeran - Topic",
+        "duration": 233500,
+        "is_ytm": true
+      }
+    ],
+    "expected_match_id": "cand_correct_artist"
+  },
+  {
+    "scenario": "featuring_variants",
+    "description": "Featuring text in Spotify title is cleaned and matches studio version",
+    "target": {
+      "title": "God's Plan (feat. Drake)",
+      "artists": ["Drake"],
+      "duration_ms": 198000
+    },
+    "candidates": [
+      {
+        "id": "cand_cover",
+        "title": "God's Plan Acoustic Cover",
+        "author": "Cover Artist",
+        "duration": 205000,
+        "is_ytm": false
+      },
+      {
+        "id": "cand_studio_feat",
+        "title": "God's Plan",
+        "author": "Drake - Topic",
+        "duration": 198400,
+        "is_ytm": true
+      }
+    ],
+    "expected_match_id": "cand_studio_feat"
+  },
+  {
+    "scenario": "unicode_titles",
+    "description": "Unicode titles match correctly without encoding corruption",
+    "target": {
+      "title": "夜に駆ける",
+      "artists": ["YOASOBI"],
+      "duration_ms": 261000
+    },
+    "candidates": [
+      {
+        "id": "cand_karaoke",
+        "title": "夜に駆ける karaoke instrumental",
+        "author": "Karaoke Maker",
+        "duration": 261000,
+        "is_ytm": false
+      },
+      {
+        "id": "cand_unicode_exact",
+        "title": "夜に駆ける",
+        "author": "YOASOBI - Topic",
+        "duration": 261300,
+        "is_ytm": true
+      }
+    ],
+    "expected_match_id": "cand_unicode_exact"
+  }
+]

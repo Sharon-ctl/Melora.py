@@ -1,0 +1,7 @@
+[tool.ruff]
+line-length = 130
+target-version = "py311"
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]

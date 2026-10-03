@@ -1,0 +1,31 @@
+{
+  "duration_tolerance_seconds": 3.0,
+  "match_threshold": 55.0,
+  "weights": {
+    "duration": 50.0,
+    "artist": 30.0,
+    "title": 20.0,
+    "topic_bonus": 10.0,
+    "ytm_bonus": 10.0,
+    "penalty": 40.0
+  },
+  "penalized_keywords": [
+    "live",
+    "cover",
+    "remix",
+    "sped up",
+    "slowed",
+    "reverb",
+    "nightcore",
+    "karaoke",
+    "instrumental",
+    "8d",
+    "lyric video",
+    "lyrics"
+  ],
+  "strip_patterns": [
+    "(?i)\\s*\\((?:feat\\.|featuring|ft\\.)\\s*[^)]*\\)",
+    "(?i)\\s*\\[(?:feat\\.|featuring|ft\\.)\\s*[^\\]]*\\]",
+    "(?i)\\s*-\\s*(?:\\d{4}\\s+)?(?:remaster(?:ed)?|anniversary|deluxe|bonus|re-recorded|edit|radio edit|mono|stereo|expanded).*$"
+  ]
+}

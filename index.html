@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Discord Music Bot - Project Guide</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+</head>
+<body class="bg-slate-950 text-slate-200 antialiased">
+  <header class="border-b border-slate-800">
+    <div class="mx-auto max-w-4xl px-6 py-10">
+      <p class="text-sm font-medium uppercase tracking-widest text-indigo-400">Project guide</p>
+      <h1 class="mt-2 text-3xl font-bold text-white sm:text-4xl">Discord Music Bot</h1>
+      <p class="mt-3 max-w-2xl text-slate-400">
+        A slash-command-only music bot on discord.py and lavalink.py, built to run unattended.
+        The bot itself is the Python project in this folder. This page is a quick reference for setting it up and testing it.
+      </p>
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-4xl space-y-12 px-6 py-10">
+    <section>
+      <h2 class="text-xl font-semibold text-white">Setup on Windows</h2>
+      <ol class="mt-4 list-decimal space-y-2 pl-6 text-slate-300">
+        <li>Create the environment: <code class="rounded bg-slate-800 px-1.5 py-0.5 text-sm">py -3.11 -m venv .venv</code></li>
+        <li>Activate it: <code class="rounded bg-slate-800 px-1.5 py-0.5 text-sm">.venv\Scripts\Activate.ps1</code></li>
+        <li>Install: <code class="rounded bg-slate-800 px-1.5 py-0.5 text-sm">pip install -r requirements-dev.txt</code></li>
+        <li>Copy <code class="rounded bg-slate-800 px-1.5 py-0.5 text-sm">.env.example</code> to <code class="rounded bg-slate-800 px-1.5 py-0.5 text-sm">.env</code> and fill in the token, owner ID and Lavalink password.</li>
+        <li>Set <code class="rounded bg-slate-800 px-1.5 py-0.5 text-sm">SYNC_ON_START=true</code> for the first run only, then set it back to false.</li>
+        <li>Start with <code class="rounded bg-slate-800 px-1.5 py-0.5 text-sm">run.bat</code>.</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2 class="text-xl font-semibold text-white">Developer Portal</h2>
+      <div class="mt-4 grid gap-4 sm:grid-cols-3">
+        <div class="rounded-lg border border-slate-800 bg-slate-900 p-4">
+          <p class="font-medium text-white">Presence Intent</p>
+          <p class="mt-1 text-sm text-emerald-400">Keep OFF</p>
+        </div>
+        <div class="rounded-lg border border-slate-800 bg-slate-900 p-4">
+          <p class="font-medium text-white">Server Members Intent</p>
+          <p class="mt-1 text-sm text-emerald-400">Keep OFF</p>
+        </div>
+        <div class="rounded-lg border border-slate-800 bg-slate-900 p-4">
+          <p class="font-medium text-white">Message Content Intent</p>
+          <p class="mt-1 text-sm text-emerald-400">Keep OFF</p>
+        </div>
+      </div>
+      <p class="mt-4 text-sm text-slate-400">
+        Invite scopes: <span class="text-slate-200">bot</span> and <span class="text-slate-200">applications.commands</span>.
+        Minimum permissions: View Channel, Connect, Speak, Send Messages (permissions integer 3148800).
+        Send Messages is only used for notices outside a command and is skipped quietly if missing.
+      </p>
+    </section>
+
+    <section>
+      <h2 class="text-xl font-semibold text-white">Commands</h2>
+      <div class="mt-4 overflow-hidden rounded-lg border border-slate-800">
+        <table class="w-full text-left text-sm">
+          <thead class="bg-slate-900 text-slate-400">
+            <tr><th class="px-4 py-2 font-medium">Command</th><th class="px-4 py-2 font-medium">What it does</th></tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800">
+            <tr><td class="px-4 py-2 font-mono">/play query</td><td class="px-4 py-2">Play a link or search text, with automatic search fallback</td></tr>
+            <tr><td class="px-4 py-2 font-mono">/pause /resume /skip</td><td class="px-4 py-2">Playback control</td></tr>
+            <tr><td class="px-4 py-2 font-mono">/stop /leave</td><td class="px-4 py-2">Stop and clear, or leave the channel</td></tr>
+            <tr><td class="px-4 py-2 font-mono">/queue [page]</td><td class="px-4 py-2">Upcoming tracks, 10 per page</td></tr>
+            <tr><td class="px-4 py-2 font-mono">/remove /clear /shuffle</td><td class="px-4 py-2">Queue editing</td></tr>
+            <tr><td class="px-4 py-2 font-mono">/loop mode</td><td class="px-4 py-2">off, track or queue</td></tr>
+            <tr><td class="px-4 py-2 font-mono">/volume level</td><td class="px-4 py-2">0 to 100</td></tr>
+            <tr><td class="px-4 py-2 font-mono">/sync /status</td><td class="px-4 py-2">Owner only</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="text-xl font-semibold text-white">Manual test checklist</h2>
+      <p class="mt-2 text-sm text-slate-400">Tick items as you go. Your progress is kept in this browser.</p>
+      <ul id="checklist" class="mt-4 space-y-2"></ul>
+    </section>
+
+    <section>
+      <h2 class="text-xl font-semibold text-white">Verification commands</h2>
+      <pre class="mt-4 overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 p-4 text-sm text-slate-300">python -m compileall -q .
+python -m pytest
+ruff check .
+python -m tests.run_soak --cycles 500 --guilds 25</pre>
+    </section>
+  </main>
+
+  <footer class="border-t border-slate-800 py-6 text-center text-sm text-slate-500">
+    See README.md for the full guide.
+  </footer>
+
+  <script>
+    const items = [
+      "Normal playback: /play a song, then /pause, /resume, /skip",
+      "Kick the bot from voice while playing: the player is destroyed and /play works again",
+      "Move the bot to another channel: the player is destroyed, no ghost player remains",
+      "Delete the voice channel while playing: the player is destroyed",
+      "Stop and restart Lavalink mid-song: channel is told, bot recovers, no stuck player",
+      "Play a broken link: one short notice, no fallback for links, queue continues",
+      "Everyone leaves the channel: the bot leaves after the alone timeout",
+      "Queue a large playlist: added and skipped counts are reported, playback starts at once",
+      "Command spam: /play cooldown replies, no crashes, nothing answered twice",
+      "Two servers at once: queues, loops and failures stay independent"
+    ];
+    const key = "music-bot-checklist-v1";
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem(key) || "{}"); } catch (e) { saved = {}; }
+    const list = document.getElementById("checklist");
+    items.forEach((text, index) => {
+      const li = document.createElement("li");
+      li.className = "flex items-start gap-3 rounded-lg border border-slate-800 bg-slate-900 p-3";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.id = "item-" + index;
+      box.className = "mt-1 h-4 w-4 accent-indigo-500";
+      box.checked = Boolean(saved[index]);
+      const label = document.createElement("label");
+      label.htmlFor = box.id;
+      label.textContent = text;
+      label.className = "text-sm text-slate-300";
+      const sync = () => { label.classList.toggle("line-through", box.checked); label.classList.toggle("text-slate-500", box.checked); };
+      box.addEventListener("change", () => {
+        saved[index] = box.checked;
+        try { localStorage.setItem(key, JSON.stringify(saved)); } catch (e) {}
+        sync();
+      });
+      sync();
+      li.append(box, label);
+      list.appendChild(li);
+    });
+  </script>
+</body>
+</html>

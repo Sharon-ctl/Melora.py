@@ -1,0 +1,56 @@
+{
+  "bassboost": {
+    "equalizer": [
+      {"band": 0, "gain": 0.25},
+      {"band": 1, "gain": 0.20},
+      {"band": 2, "gain": 0.15},
+      {"band": 3, "gain": 0.10}
+    ]
+  },
+  "nightcore": {
+    "timescale": {
+      "speed": 1.25,
+      "pitch": 1.25,
+      "rate": 1.0
+    }
+  },
+  "vaporwave": {
+    "timescale": {
+      "speed": 0.85,
+      "pitch": 0.80,
+      "rate": 1.0
+    }
+  },
+  "rotation": {
+    "rotation": {
+      "rotation_hz": 0.2
+    }
+  },
+  "karaoke": {
+    "karaoke": {
+      "level": 1.0,
+      "mono_level": 1.0,
+      "filter_band": 220.0,
+      "filter_width": 100.0
+    }
+  },
+  "tremolo": {
+    "tremolo": {
+      "frequency": 2.0,
+      "depth": 0.5
+    }
+  },
+  "vibrato": {
+    "vibrato": {
+      "frequency": 2.0,
+      "depth": 0.5
+    }
+  },
+  "smooth": {
+    "timescale": {
+      "speed": 0.98,
+      "pitch": 1.0,
+      "rate": 1.0
+    }
+  }
+}
