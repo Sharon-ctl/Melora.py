@@ -9,7 +9,7 @@ lavalink:
     - dependency: "dev.lavalink.youtube:youtube-plugin:f45bbb7aebfcbc1c553769e04af6cd43afa8b7c3"
       snapshot: true
   server:
-    password: "123"
+    password: "change-me"
     sources:
       youtube: false
       soundcloud: true
