@@ -62,8 +62,8 @@ def configure_dns_resolver() -> None:
         r = aiodns.DNSResolver()
         if r.nameservers == ["127.0.0.1"] or not r.nameservers:
             aiohttp.connector.DefaultResolver = aiohttp.resolver.ThreadedResolver
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("DNS resolver check skipped: %s", exc)
 
 
 configure_dns_resolver()
