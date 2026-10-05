@@ -196,7 +196,7 @@ def test_destroy_is_idempotent_and_cancels_tasks():
     async def scenario():
         registry, backend, _ = build()
         player = await registry.get_or_create(1, 10, 20)
-        player.start_timer("alone", 300, "alone")
+        player.tasks.spawn(asyncio.sleep(300), name="test-task")
         baseline = len(asyncio.all_tasks())
         assert await registry.destroy(1, "test") is True
         assert await registry.destroy(1, "test") is False

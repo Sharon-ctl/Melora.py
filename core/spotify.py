@@ -167,7 +167,7 @@ class ScraperSpotifyProvider(SpotifyProvider):
         try:
             client = self._get_client()
             playlist_obj = await asyncio.wait_for(
-                asyncio.to_thread(client.get_playlist, spotify_id, max_tracks=100),
+                asyncio.to_thread(client.get_playlist, spotify_id, max_tracks=None),
                 timeout=REQUEST_TIMEOUT,
             )
             if not playlist_obj or not getattr(playlist_obj, "name", None):

@@ -53,6 +53,28 @@ class SoakReport:
         return not self.problems
 
 
+async def run_unlimited_queue_scenario(registry: PlayerRegistry) -> None:
+    """Exercise an unlimited queue with 100,000 tracks, large chunked imports, paging, shuffle, and skip."""
+    large_guild_id = 88888
+    large_player = await registry.get_or_create(large_guild_id, 188888, 288888)
+    chunk_size = 5000
+    total_tracks = 100_000
+    for chunk_start in range(0, total_tracks, chunk_size):
+        chunk = [
+            QueueItem.from_track(make_track(chunk_start + k), requester_id=1)
+            for k in range(chunk_size)
+        ]
+        await large_player.enqueue(chunk)
+        await asyncio.sleep(0)
+
+    assert len(large_player.queue) == total_tracks - 1
+    _ = large_player.queue.page(500, per_page=10)
+    large_player.queue.shuffle()
+    if large_player.current is not None:
+        await large_player.skip()
+    await registry.destroy(large_guild_id, "soak_large_queue_end")
+
+
 async def run_soak(cycles: int = 500, guilds: int = 25, rss_limit_mb: float | None = None) -> SoakReport:
     cfg = make_config()
     backend = FakeBackend()
@@ -180,6 +202,10 @@ async def run_soak(cycles: int = 500, guilds: int = 25, rss_limit_mb: float | No
 
     for i in range(cycles):
         await one_cycle(i)
+
+    # Unlimited queue scenario: 100,000 tracks and large imports
+    await run_unlimited_queue_scenario(registry)
+
     await registry.destroy_all("end of soak")
     await ACTIVE_VIEWS.close_all()
     limiter = get_limiter()

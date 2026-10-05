@@ -125,7 +125,9 @@ class VoiceEvents(commands.Cog):
     @guarded
     async def on_node_disconnected(self, event: NodeDisconnectedEvent) -> None:
         log.warning("Lavalink node %s disconnected (code=%s)", event.node.name, event.code)
-        self.bot.supervisor.start("node-loss-check", self._node_loss_check, restart=False)
+        await self.bot.registry.handle_node_disconnected(event.node)
+        if not self.bot.backend.any_node_available():
+            self.bot.supervisor.start("node-loss-check", self._node_loss_check, restart=False)
 
     @guarded
     async def on_node_changed(self, event: NodeChangedEvent) -> None:
@@ -194,6 +196,8 @@ class VoiceEvents(commands.Cog):
     @commands.Cog.listener()
     @guarded
     async def on_guild_remove(self, guild: discord.Guild) -> None:
+        if getattr(guild, "unavailable", False):
+            return
         await self.bot.registry.on_guild_removed(guild.id)
 
 

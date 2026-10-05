@@ -11,9 +11,13 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable
+from typing import Any
 
+from core.card_flusher import CardFlusher
 from core.contracts import PlayerServices
 from core.guild_player import GuildPlayer
+from core.loop_monitor import LoopLagMonitor
+from core.scheduler import CentralScheduler
 from utils import messages
 
 log = logging.getLogger(__name__)
@@ -29,6 +33,44 @@ class PlayerRegistry:
         self._locks: dict[int, asyncio.Lock] = {}
         self.created_total = 0
         self.destroyed_total = 0
+
+        self.scheduler = CentralScheduler(self.expire)
+        self.flusher = CardFlusher()
+        self.loop_monitor = LoopLagMonitor(on_load_shedding_changed=self._on_load_shedding_changed)
+
+        if getattr(services, "scheduler", None) is None:
+            services.scheduler = self.scheduler
+        if getattr(services, "flusher", None) is None:
+            services.flusher = self.flusher
+        if getattr(services, "loop_monitor", None) is None:
+            services.loop_monitor = self.loop_monitor
+
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_running():
+                self.start_background_tasks()
+        except RuntimeError:
+            log.debug("No running event loop available during registry init")
+
+    def start_background_tasks(self) -> None:
+        self.scheduler.start()
+        self.flusher.start()
+        self.loop_monitor.start()
+
+    def stop_background_tasks(self) -> None:
+        self.scheduler.stop()
+        self.flusher.stop()
+        self.loop_monitor.stop()
+
+    def _on_load_shedding_changed(self, active: bool) -> None:
+        if active:
+            self.flusher.set_cadence(4.0)
+        else:
+            self.flusher.reset_cadence()
+
+    @property
+    def is_load_shedding(self) -> bool:
+        return self.loop_monitor.is_load_shedding
 
     # ------------------------------------------------------------------ access
 
@@ -109,6 +151,8 @@ class PlayerRegistry:
             return await self._destroy_locked(guild_id, reason)
 
     async def _destroy_locked(self, guild_id: int, reason: str) -> bool:
+        self.scheduler.cancel_guild(guild_id)
+        self.flusher.cancel(guild_id)
         player = self._players.pop(guild_id, None)
         if player is not None:
             # Delete the now playing card before shutting down tasks
@@ -134,7 +178,7 @@ class PlayerRegistry:
         return player is not None
 
     async def expire(self, guild_id: int, reason: str) -> None:
-        """Timer callback for idle, alone, and sleep timeouts."""
+        """Timer callback for idle, alone, sleep, vote_expiry, and snapshot timeouts."""
         player = self._players.get(guild_id)
         if player is None:
             return
@@ -144,16 +188,28 @@ class PlayerRegistry:
                 log.info("guild=%s alone timer fired but members are present; ignoring", guild_id)
                 return
             await player.notify(messages.alone_leave())
+            await self.destroy(guild_id, reason)
         elif reason == "idle":
             await player.notify(messages.idle_leave())
+            await self.destroy(guild_id, reason)
         elif reason == "sleep":
             await player.notify(messages.sleep_finished())
-        await self.destroy(guild_id, reason)
+            await self.destroy(guild_id, reason)
+        elif reason == "vote_expiry":
+            player.votes.clear()
+            log.debug("guild=%s vote skip expired; votes cleared", guild_id)
+        elif reason == "snapshot":
+            await player._debounced_snapshot(0.0)
+        else:
+            await self.destroy(guild_id, reason)
 
-    async def destroy_all(self, reason: str) -> None:
+    async def destroy_all(self, reason: str, chunk_size: int = 50) -> None:
         guild_ids = list(self._players)
-        if guild_ids:
-            await asyncio.gather(*(self.destroy(g, reason) for g in guild_ids), return_exceptions=True)
+        for i in range(0, len(guild_ids), chunk_size):
+            chunk = guild_ids[i : i + chunk_size]
+            await asyncio.gather(*(self.destroy(g, reason) for g in chunk), return_exceptions=True)
+            if i + chunk_size < len(guild_ids):
+                await asyncio.sleep(0)
 
     async def on_guild_removed(self, guild_id: int) -> None:
         await self.destroy(guild_id, "removed from guild")
@@ -188,31 +244,44 @@ class PlayerRegistry:
         """
         backend = self.services.backend
         fixed = 0
-        for guild_id, player in list(self._players.items()):
-            if self._lock(guild_id).locked():
-                continue
-            try:
-                fixed += await self._reconcile_one(guild_id, player, source)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception("guild=%s reconcile failed (%s)", guild_id, source)
+        items = list(self._players.items())
+        chunk_size = 50
+        for i in range(0, len(items), chunk_size):
+            chunk = items[i : i + chunk_size]
+            for guild_id, player in chunk:
+                if self._lock(guild_id).locked():
+                    continue
+                try:
+                    fixed += await self._reconcile_one(guild_id, player, source)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("guild=%s reconcile failed (%s)", guild_id, source)
+            if i + chunk_size < len(items):
+                await asyncio.sleep(0)
+
         try:
-            strays = backend.stray_guild_ids() - set(self._players)
+            strays = list(backend.stray_guild_ids() - set(self._players))
         except Exception:
             log.exception("could not list stray players (%s)", source)
-            strays = set()
-        for guild_id in strays:
-            if self._lock(guild_id).locked():
-                continue
-            try:
-                log.warning("guild=%s leftover player or voice connection found (%s)", guild_id, source)
-                await self.destroy(guild_id, f"{source}: leftover")
-                fixed += 1
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception("guild=%s leftover cleanup failed (%s)", guild_id, source)
+            strays = []
+
+        for i in range(0, len(strays), chunk_size):
+            chunk = strays[i : i + chunk_size]
+            for guild_id in chunk:
+                if self._lock(guild_id).locked():
+                    continue
+                try:
+                    log.warning("guild=%s leftover player or voice connection found (%s)", guild_id, source)
+                    await self.destroy(guild_id, f"{source}: leftover")
+                    fixed += 1
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("guild=%s leftover cleanup failed (%s)", guild_id, source)
+            if i + chunk_size < len(strays):
+                await asyncio.sleep(0)
+
         if fixed:
             log.info("reconcile (%s) fixed %d problem(s)", source, fixed)
         return fixed
@@ -220,6 +289,9 @@ class PlayerRegistry:
     async def _reconcile_one(self, guild_id: int, player: GuildPlayer, source: str) -> int:
         backend = self.services.backend
         cfg = self.services.cfg
+        if hasattr(backend, "is_guild_shard_ready") and not backend.is_guild_shard_ready(guild_id):
+            log.debug("guild=%s shard is disconnected/reconnecting; skipping reconcile", guild_id)
+            return 0
         if player.destroyed:
             self._players.pop(guild_id, None)
             return 1
@@ -244,6 +316,38 @@ class PlayerRegistry:
             return 1
         return 0
 
+    async def handle_node_disconnected(self, node: Any) -> None:
+        """Handle disconnection of a Lavalink node: ensure failover to healthy node or clean up."""
+        backend = self.services.backend
+        ideal_node = backend.find_ideal_node(exclude=[node]) if hasattr(backend, "find_ideal_node") else None
+
+        for guild_id, player in list(self._players.items()):
+            ll_player = backend.audio(guild_id)
+            if ll_player is None:
+                continue
+            curr_node = getattr(ll_player, "node", None)
+            if curr_node == node or (curr_node is not None and not getattr(curr_node, "available", True)):
+                if ideal_node is not None:
+                    # If lavalink hasn't already switched it to an available node
+                    if getattr(curr_node, "name", None) == getattr(node, "name", None):
+                        try:
+                            log.info(
+                                "guild=%s moving player from dead node %s to healthy node %s",
+                                guild_id,
+                                getattr(node, "name", ""),
+                                ideal_node.name,
+                            )
+                            await ll_player.change_node(ideal_node)
+                        except Exception as exc:
+                            log.warning("guild=%s failover to node %s failed: %s", guild_id, ideal_node.name, exc)
+                            await player.notify(LOST_NODE_NOTICE)
+                            await self.destroy(guild_id, f"node loss: failover failed ({exc})")
+                else:
+                    # No nodes available anywhere; if grace is 0, destroy immediately
+                    if getattr(self.services.cfg, "node_loss_grace", 30) <= 0:
+                        await player.notify(LOST_NODE_NOTICE)
+                        await self.destroy(guild_id, "audio node lost")
+
     async def handle_all_nodes_down(self) -> int:
         """Called after the node-loss grace period. Destroys players if no node came back."""
         backend = self.services.backend
@@ -263,11 +367,18 @@ class PlayerRegistry:
 
     # ----------------------------------------------------------------- watchdog
 
+    async def watchdog(self) -> int:
+        """Run a single watchdog reconciliation pass."""
+        return await self.reconcile("watchdog")
+
     async def watchdog_loop(self) -> None:
         interval = self.services.cfg.watchdog_interval
         while True:
             await asyncio.sleep(interval)
             try:
+                if self.is_load_shedding:
+                    log.debug("Deferring non-critical watchdog pass: load shedding active")
+                    continue
                 await asyncio.wait_for(self.reconcile("watchdog"), timeout=max(interval * 2, 60))
                 self._prune_locks()
             except asyncio.CancelledError:

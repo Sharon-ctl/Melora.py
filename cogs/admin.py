@@ -352,12 +352,41 @@ class Admin(commands.Cog):
             f"**Uptime:** `{uptime}`",
             f"**Active Players:** `{stats.players}`",
             "",
-            "### Lavalink Nodes",
+            "### Gateway Shards",
         ]
 
+        shards = getattr(self.bot, "shards", None)
+        if shards:
+            guild_counts: dict[int, int] = {}
+            for g in self.bot.guilds:
+                s_id = getattr(g, "shard_id", 0)
+                guild_counts[s_id] = guild_counts.get(s_id, 0) + 1
+            for shard_id, shard in sorted(shards.items()):
+                lat = (
+                    f"{shard.latency * 1000:.1f} ms"
+                    if (shard.latency is not None and not math.isnan(shard.latency))
+                    else "unknown"
+                )
+                state = "disconnected" if shard.is_closed() else "connected"
+                cnt = guild_counts.get(shard_id, 0)
+                lines.append(f"**Shard {shard_id}:** `{state}` • `{lat}` • `{cnt} guilds`")
+        else:
+            lines.append(f"**Shard 0:** `connected` • `{latency}` • `{len(self.bot.guilds)} guilds`")
+
+        lines.append("")
+        lines.append("### Lavalink Nodes")
+
         lavalink_client = getattr(self.bot, "lavalink", None)
-        if lavalink_client is not None and lavalink_client.node_manager.nodes:
-            for node in lavalink_client.node_manager.nodes:
+        nodes = getattr(getattr(lavalink_client, "node_manager", None), "nodes", []) if lavalink_client else []
+        available_nodes = [n for n in nodes if getattr(n, "available", False)]
+        if not nodes:
+            lines.append("**Nodes:** `None configured`")
+        elif not available_nodes:
+            lines.append("**Status:** `Music server offline`")
+            for node in nodes:
+                lines.append(f"**{node.name}:** `offline` • `Players: {len(getattr(node, 'players', []))}`")
+        else:
+            for node in nodes:
                 state = "online" if node.available else "offline"
                 n_stats = getattr(node, "stats", None)
                 if n_stats and not getattr(n_stats, "is_fake", False):
@@ -366,9 +395,7 @@ class Admin(commands.Cog):
                     p_info = f"{n_stats.playing_players}/{n_stats.players}"
                     lines.append(f"**{node.name}:** `{state}` • `CPU: {cpu}` • `Mem: {mem}` • `Players: {p_info}`")
                 else:
-                    lines.append(f"**{node.name}:** `{state}`")
-        else:
-            lines.append("**Nodes:** `None configured`")
+                    lines.append(f"**{node.name}:** `{state}` • `Players: {len(getattr(node, 'players', []))}`")
 
         # Voice bitrate analysis
         lines.append("")
@@ -415,6 +442,15 @@ class Admin(commands.Cog):
             supervised = self.bot.supervisor.live_count()
             lines.append(f"**Tasks:** `{task_count} total` • `{supervised} supervised`")
             lines.append(f"**Registry Size:** `{len(self.bot.registry)}`")
+
+            loop_monitor = getattr(getattr(self.bot, "registry", None), "loop_monitor", None)
+            if loop_monitor is not None:
+                st = loop_monitor.stats()
+                shed_str = " • `Load Shedding: ACTIVE`" if loop_monitor.is_load_shedding else ""
+                lines.append(
+                    f"**Loop Lag:** `p50: {st['p50']:.1f}ms` • `p95: {st['p95']:.1f}ms` • "
+                    f"`p99: {st['p99']:.1f}ms` • `max: {st['max']:.1f}ms`{shed_str}"
+                )
 
             cache_parts: list[str] = []
             music_cog = self.bot.get_cog("Music")

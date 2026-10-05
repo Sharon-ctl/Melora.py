@@ -43,6 +43,20 @@ class DiscordBackend:
     def any_node_available(self) -> bool:
         return bool(self._ll.node_manager.available_nodes)
 
+    def find_ideal_node(self, region: str | None = None, exclude: Any = None) -> Any | None:
+        return self._ll.node_manager.find_ideal_node(region=region, exclude=exclude)
+
+    def is_guild_shard_ready(self, guild_id: int) -> bool:
+        guild = self._bot.get_guild(guild_id)
+        if guild is None or getattr(guild, "unavailable", False):
+            return False
+        shard_id = getattr(guild, "shard_id", None)
+        if shard_id is not None and hasattr(self._bot, "get_shard"):
+            shard = self._bot.get_shard(shard_id)
+            if shard is not None and shard.is_closed():
+                return False
+        return True
+
     def bot_display_name(self, guild_id: int) -> str:
         guild = self._bot.get_guild(guild_id)
         if guild is not None and guild.me is not None:
@@ -119,8 +133,10 @@ class DiscordBackend:
         channel = guild.get_channel(channel_id) if guild is not None else None
         if channel is None or not hasattr(channel, "connect"):
             raise VoiceConnectFailed()
+        rtc_region = getattr(channel, "rtc_region", None)
+        region_str = str(rtc_region) if rtc_region else None
         try:
-            self._ll.player_manager.create(guild_id)
+            self._ll.player_manager.create(guild_id, region=region_str)
         except ClientError:
             raise NodeOffline() from None
         try:

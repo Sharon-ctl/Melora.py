@@ -13,11 +13,18 @@ from itertools import islice
 from math import ceil
 from typing import Any
 
+from utils.cache import TTLCache
 from utils.errors import QueueFull, TrackTooLong, UserLimitReached
 from utils.text import clean, format_duration
 
 MAX_TITLE_CHARS = 200
 DEFAULT_HISTORY_SIZE = 50
+
+_AVATAR_CACHE: TTLCache[int, str] = TTLCache(max_size=10000, ttl=86400.0)
+
+
+def clear_avatar_cache() -> None:
+    _AVATAR_CACHE.clear()
 
 
 class LoopMode(str, Enum):
@@ -40,24 +47,72 @@ def _uri_of(track: Any) -> str:
     return str(getattr(track, "uri", "") or "")[:500]
 
 
-@dataclass(eq=False)
 class QueueItem:
-    """One queued track. Holds only the track object and plain values."""
+    """One queued track. Uses __slots__ and essential fields only."""
 
-    track: Any
-    title: str
-    duration_ms: int
-    requester_id: int
-    is_stream: bool = False
-    query: str | None = None
-    fallback_used: bool = False
-    artist: str = ""
-    uri: str = ""
-    isrc: str | None = None
-    spotify_metadata: dict[str, Any] | None = None
-    requester_name: str = ""
-    artwork_url: str | None = None
-    requester_avatar_url: str | None = None
+    __slots__ = (
+        "track",
+        "title",
+        "duration_ms",
+        "requester_id",
+        "is_stream",
+        "query",
+        "fallback_used",
+        "artist",
+        "uri",
+        "isrc",
+        "spotify_metadata",
+        "requester_name",
+        "artwork_url",
+    )
+
+    def __init__(
+        self,
+        track: Any,
+        title: str,
+        duration_ms: int,
+        requester_id: int,
+        is_stream: bool = False,
+        query: str | None = None,
+        fallback_used: bool = False,
+        artist: str = "",
+        uri: str = "",
+        isrc: str | None = None,
+        spotify_metadata: dict[str, Any] | None = None,
+        requester_name: str = "",
+        artwork_url: str | None = None,
+        requester_avatar_url: str | None = None,
+    ) -> None:
+        self.track = track
+        self.title = title
+        self.duration_ms = duration_ms
+        self.requester_id = requester_id
+        self.is_stream = is_stream
+        self.query = query
+        self.fallback_used = fallback_used
+        self.artist = artist
+        self.uri = uri
+        self.isrc = isrc
+        self.spotify_metadata = spotify_metadata
+        self.requester_name = requester_name
+        self.artwork_url = artwork_url
+        if requester_avatar_url:
+            _AVATAR_CACHE.set(requester_id, requester_avatar_url)
+
+    def __repr__(self) -> str:
+        return (
+            f"QueueItem(title={self.title!r}, artist={self.artist!r}, "
+            f"duration_ms={self.duration_ms}, requester_id={self.requester_id})"
+        )
+
+    @property
+    def requester_avatar_url(self) -> str | None:
+        return _AVATAR_CACHE.get(self.requester_id)
+
+    @requester_avatar_url.setter
+    def requester_avatar_url(self, url: str | None) -> None:
+        if url:
+            _AVATAR_CACHE.set(self.requester_id, url)
 
     @classmethod
     def from_track(
@@ -143,9 +198,10 @@ def validate_track(track: Any, max_seconds: int) -> None:
     """Raise TrackTooLong if the track is a live stream or exceeds the limit."""
     if bool(getattr(track, "is_stream", False)):
         raise TrackTooLong("Live streams are not supported.")
-    duration = int(getattr(track, "duration", 0) or 0)
-    if duration > max_seconds * 1000:
-        raise TrackTooLong(f"That track is longer than the limit of {format_duration(max_seconds * 1000)}.")
+    if max_seconds > 0:
+        duration = int(getattr(track, "duration", 0) or 0)
+        if duration > max_seconds * 1000:
+            raise TrackTooLong(f"That track is longer than the limit of {format_duration(max_seconds * 1000)}.")
 
 
 @dataclass(frozen=True)
@@ -158,9 +214,9 @@ class AddResult:
 class TrackQueue:
     """FIFO queue of upcoming tracks with bounded history and position operations."""
 
-    def __init__(self, max_size: int, max_per_user: int, history_size: int = DEFAULT_HISTORY_SIZE) -> None:
-        if max_size < 1 or max_per_user < 1:
-            raise ValueError("max_size and max_per_user must be at least 1")
+    def __init__(self, max_size: int = 0, max_per_user: int = 0, history_size: int = DEFAULT_HISTORY_SIZE) -> None:
+        if max_size < 0 or max_per_user < 0:
+            raise ValueError("max_size and max_per_user must be at least 0")
         self.max_size = max_size
         self.max_per_user = max_per_user
         self.history_size = max(1, history_size)
@@ -173,16 +229,19 @@ class TrackQueue:
         return len(self._items)
 
     def __iter__(self) -> Iterator[QueueItem]:
-        return iter(list(self._items))
+        return iter(self._items)
+
+    def __getitem__(self, index: int) -> QueueItem:
+        return self._items[index]
 
     def count_for(self, user_id: int) -> int:
         return self._counts.get(user_id, 0)
 
     def can_add(self, user_id: int) -> str | None:
         """Return None if a track can be added, else 'full' or 'user'."""
-        if len(self._items) >= self.max_size:
+        if self.max_size > 0 and len(self._items) >= self.max_size:
             return "full"
-        if self.count_for(user_id) >= self.max_per_user:
+        if self.max_per_user > 0 and self.count_for(user_id) >= self.max_per_user:
             return "user"
         return None
 
@@ -264,11 +323,21 @@ class TrackQueue:
             raise IndexError(position)
         actual_count = max(1, min(count, total - position + 1))
         removed: list[QueueItem] = []
-        for _ in range(actual_count):
-            item = self._items[position - 1]
-            del self._items[position - 1]
-            self._release(item)
-            removed.append(item)
+        if actual_count <= 4:
+            for _ in range(actual_count):
+                item = self._items[position - 1]
+                del self._items[position - 1]
+                self._release(item)
+                removed.append(item)
+        else:
+            items_list = list(self._items)
+            start_idx = position - 1
+            end_idx = start_idx + actual_count
+            removed = items_list[start_idx:end_idx]
+            for item in removed:
+                self._release(item)
+            del items_list[start_idx:end_idx]
+            self._items = deque(items_list)
         return removed
 
     def remove(self, position: int) -> QueueItem:
@@ -377,7 +446,11 @@ class TrackQueue:
         pages = max(1, ceil(total / per_page))
         page = min(max(page, 1), pages)
         start = (page - 1) * per_page
-        chunk = list(islice(self._items, start, start + per_page))
+        end = min(start + per_page, total)
+        if start < 5000:
+            chunk = list(islice(self._items, start, end))
+        else:
+            chunk = [self._items[i] for i in range(start, end)]
         return [(start + offset + 1, item) for offset, item in enumerate(chunk)], page, pages
 
 

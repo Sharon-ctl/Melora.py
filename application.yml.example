@@ -1,5 +1,8 @@
 server:
   port: 2333
+  # 127.0.0.1 = only this PC. For a node on another machine use 0.0.0.0
+  # (or the node's IP), a STRONG password, and a firewall rule that only
+  # allows your bot's IP.
   address: 127.0.0.1
   http2:
     enabled: false
@@ -31,16 +34,20 @@ lavalink:
       channelMix: true
       lowPass: true
 
-    # Audio quality
+    # Audio quality. This is the main CPU cost per player. If a node's CPU
+    # ever saturates, drop resamplingQuality to MEDIUM first.
     opusEncodingQuality: 10
     resamplingQuality: HIGH
 
-    # Smoothness
-    bufferDurationMs: 800
-    frameBufferDurationMs: 10000
-    trackStuckThresholdMs: 15000
+    # Smoothness and memory per player
+    bufferDurationMs: 600
+    frameBufferDurationMs: 5000
+    trackStuckThresholdMs: 10000
     useSeekGhosting: true
     playerUpdateInterval: 10
+    # Optional, for nodes with many players and GC warnings in the log.
+    # Fewer allocations per player; the cost is non-instant volume changes.
+    # nonAllocatingFrameBuffer: true
 
     youtubeSearchEnabled: true
     soundcloudSearchEnabled: true
@@ -63,7 +70,7 @@ plugins:
         playback: false
     oauth:
       enabled: true
-      refreshToken: "refresh-token-here"
+      #refreshToken: "refresh-token-here"
     remoteCipher:
       url: "https://cipher.kikkia.dev/"
       userAgent: "my-music-bot"
@@ -77,7 +84,9 @@ logging:
     dev.lavalink.youtube.http.YoutubeOauth2Handler: INFO
     dev.lavalink.youtube.clients.skeleton.StreamingNonMusicClient: ERROR
   request:
-    enabled: true
+    # One log line per API request is heavy I/O with many players.
+    # Turn it back on temporarily when debugging.
+    enabled: false
     includeClientInfo: true
     includeHeaders: false
     includeQueryString: true

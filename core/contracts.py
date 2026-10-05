@@ -68,9 +68,12 @@ class TrackLoader(Protocol):
 
 
 
-@dataclass(frozen=True)
+@dataclass
 class PlayerServices:
     cfg: Config
     backend: PlayerBackend
     loader: TrackLoader
     storage: Any | None = None
+    scheduler: Any | None = None
+    flusher: Any | None = None
+    loop_monitor: Any | None = None

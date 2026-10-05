@@ -12,13 +12,24 @@ import queue
 import sqlite3
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+
+from utils.cache import TTLCache
 
 log = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "bot.db"
+
+
+@dataclass(slots=True)
+class _StorageOp:
+    func: Callable[[sqlite3.Connection], Any]
+    future: asyncio.Future[Any]
+    loop: asyncio.AbstractEventLoop
+    is_write: bool = False
+    coalesce_key: tuple[str, Any] | None = None
 
 
 class StorageError(Exception):
@@ -29,7 +40,7 @@ class StorageUnavailable(StorageError):
     """Raised when database access is offline or failed."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class StoredTrack:
     uri: str
     title: str
@@ -115,13 +126,12 @@ class Storage:
 
     def __init__(self, db_path: Path | str | None = None) -> None:
         self.db_path = Path(db_path or DEFAULT_DB_PATH)
-        self._queue: queue.Queue[
-            tuple[Callable[[sqlite3.Connection], Any], asyncio.Future[Any], asyncio.AbstractEventLoop] | None
-        ] = queue.Queue()
+        self._queue: queue.Queue[_StorageOp | tuple[Any, ...] | None] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._closed = False
         self._init_event = threading.Event()
         self._init_error: Exception | None = None
+        self._settings_cache: TTLCache[int, GuildSettings] = TTLCache(max_size=2000, ttl=300.0)
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -156,27 +166,85 @@ class Storage:
         self._init_event.set()
 
         while True:
-            item = self._queue.get()
-            if item is None:
+            first_raw = self._queue.get()
+            if first_raw is None:
                 self._queue.task_done()
                 break
-            func, future, loop = item
-            try:
-                result = func(conn)
-                if not future.done() and not loop.is_closed():
-                    loop.call_soon_threadsafe(future.set_result, result)
-            except Exception as exc:
+
+            batch_raw: list[Any] = [first_raw]
+            while True:
                 try:
-                    conn.rollback()
-                except Exception as rb_exc:
-                    log.debug("Database rollback error: %s", rb_exc)
-                if not future.done() and not loop.is_closed():
-                    loop.call_soon_threadsafe(future.set_exception, exc)
-            finally:
+                    item_raw = self._queue.get_nowait()
+                    if item_raw is None:
+                        # Re-enqueue shutdown sentinel so loop exits cleanly after this batch
+                        self._queue.put(None)
+                        break
+                    batch_raw.append(item_raw)
+                except queue.Empty:
+                    break
+
+            batch: list[_StorageOp] = []
+            for r in batch_raw:
+                if isinstance(r, _StorageOp):
+                    batch.append(r)
+                elif isinstance(r, tuple):
+                    batch.append(_StorageOp(r[0], r[1], r[2]))
+                else:
+                    batch.append(r)
+
+            # Coalesce writes (latest-wins per coalesce_key, e.g. ("queue_snapshot", guild_id))
+            seen_keys: set[tuple[str, Any]] = set()
+            ops_to_execute: list[_StorageOp] = []
+            coalesced_ops: list[_StorageOp] = []
+
+            for op in reversed(batch):
+                if op.coalesce_key is not None:
+                    if op.coalesce_key in seen_keys:
+                        coalesced_ops.append(op)
+                        continue
+                    seen_keys.add(op.coalesce_key)
+                ops_to_execute.append(op)
+
+            ops_to_execute.reverse()
+
+            # Fast-complete coalesced superseded ops
+            for cop in coalesced_ops:
                 self._queue.task_done()
+                if not cop.future.done() and not cop.loop.is_closed():
+                    cop.loop.call_soon_threadsafe(cop.future.set_result, None)
+
+            # Execute batch operations grouped into a single transaction
+            has_writes = any(op.is_write for op in ops_to_execute)
+            for op in ops_to_execute:
+                try:
+                    if op.is_write:
+                        conn.execute("SAVEPOINT op_sp;")
+                    result = op.func(conn)
+                    if op.is_write:
+                        conn.execute("RELEASE SAVEPOINT op_sp;")
+                    if not op.future.done() and not op.loop.is_closed():
+                        op.loop.call_soon_threadsafe(op.future.set_result, result)
+                except Exception as exc:
+                    if op.is_write:
+                        try:
+                            conn.execute("ROLLBACK TO SAVEPOINT op_sp;")
+                            conn.execute("RELEASE SAVEPOINT op_sp;")
+                        except Exception as rb_exc:
+                            log.debug("Savepoint rollback error: %s", rb_exc)
+                    if not op.future.done() and not op.loop.is_closed():
+                        op.loop.call_soon_threadsafe(op.future.set_exception, exc)
+                finally:
+                    self._queue.task_done()
+
+            if has_writes or conn.in_transaction:
+                try:
+                    conn.commit()
+                except Exception as c_exc:
+                    log.debug("Batch commit error: %s", c_exc)
 
         try:
-            conn.commit()
+            if conn.in_transaction:
+                conn.commit()
             conn.close()
         except Exception as exc:
             log.debug("Database final close error: %s", exc)
@@ -194,12 +262,18 @@ class Storage:
                 conn.commit()
                 log.info("Applied database migration %d", idx)
 
-    async def _run(self, func: Callable[[sqlite3.Connection], Any]) -> Any:
+    async def _run(
+        self,
+        func: Callable[[sqlite3.Connection], Any],
+        *,
+        is_write: bool = False,
+        coalesce_key: tuple[str, Any] | None = None,
+    ) -> Any:
         if self._closed or self._thread is None or not self._thread.is_alive():
             raise StorageUnavailable("Storage is closed or unavailable.")
         loop = asyncio.get_running_loop()
         future: asyncio.Future[Any] = loop.create_future()
-        self._queue.put((func, future, loop))
+        self._queue.put(_StorageOp(func, future, loop, is_write=is_write, coalesce_key=coalesce_key))
         try:
             return await future
         except StorageError:
@@ -252,6 +326,10 @@ class Storage:
 
     # ----------------------------------------------------- guild settings
     async def get_guild_settings(self, guild_id: int) -> GuildSettings:
+        cached = self._settings_cache.get(guild_id)
+        if cached is not None:
+            return cached
+
         def _get(conn: sqlite3.Connection) -> GuildSettings:
             cur = conn.cursor()
             cur.execute(
@@ -279,7 +357,9 @@ class Storage:
                 default_volume=row[10],
             )
 
-        return await self._run(_get)
+        settings = await self._run(_get)
+        self._settings_cache.set(guild_id, settings)
+        return settings
 
     async def update_guild_settings(self, guild_id: int, **fields: Any) -> GuildSettings:
         allowed = {
@@ -298,6 +378,8 @@ class Storage:
             if k not in allowed:
                 raise ValueError(f"Unknown guild setting: {k}")
 
+        self._settings_cache.invalidate(guild_id)
+
         def _update(conn: sqlite3.Connection) -> GuildSettings:
             cur = conn.cursor()
             cur.execute("SELECT guild_id FROM guild_settings WHERE guild_id = ?", (guild_id,))
@@ -315,10 +397,11 @@ class Storage:
                     f"UPDATE guild_settings SET {', '.join(set_clauses)} WHERE guild_id = ?",
                     values,
                 )
-                conn.commit()
             return self._get_settings_direct(conn, guild_id)
 
-        return await self._run(_update)
+        res = await self._run(_update, is_write=True)
+        self._settings_cache.set(guild_id, res)
+        return res
 
     @staticmethod
     def _get_settings_direct(conn: sqlite3.Connection, guild_id: int) -> GuildSettings:
@@ -349,13 +432,14 @@ class Storage:
         )
 
     async def delete_guild(self, guild_id: int) -> None:
+        self._settings_cache.invalidate(guild_id)
+
         def _del(conn: sqlite3.Connection) -> None:
             cur = conn.cursor()
             cur.execute("DELETE FROM guild_settings WHERE guild_id = ?", (guild_id,))
             cur.execute("DELETE FROM queue_snapshots WHERE guild_id = ?", (guild_id,))
-            conn.commit()
 
-        await self._run(_del)
+        await self._run(_del, is_write=True)
 
     # ---------------------------------------------------------- favorites
     async def get_favorites(self, user_id: int) -> list[StoredTrack]:
@@ -378,7 +462,7 @@ class Storage:
             cur = conn.cursor()
             cur.execute("SELECT COUNT(*) FROM favorites WHERE user_id = ?", (user_id,))
             count = cur.fetchone()[0]
-            if count >= limit:
+            if limit > 0 and count >= limit:
                 raise StorageError(f"Favorite limit of {limit} reached.")
             next_pos = count + 1
             cur.execute(
@@ -388,10 +472,9 @@ class Storage:
                 """,
                 (user_id, next_pos, track.uri, track.title, track.artist, track.duration_ms, time.time()),
             )
-            conn.commit()
             return next_pos
 
-        return await self._run(_add)
+        return await self._run(_add, is_write=True)
 
     async def remove_favorite(self, user_id: int, position: int) -> StoredTrack:
         def _remove(conn: sqlite3.Connection) -> StoredTrack:
@@ -409,10 +492,9 @@ class Storage:
                 "UPDATE favorites SET position = position - 1 WHERE user_id = ? AND position > ?",
                 (user_id, position),
             )
-            conn.commit()
             return removed
 
-        return await self._run(_remove)
+        return await self._run(_remove, is_write=True)
 
     async def clear_favorites(self, user_id: int) -> int:
         def _clear(conn: sqlite3.Connection) -> int:
@@ -420,10 +502,9 @@ class Storage:
             cur.execute("SELECT COUNT(*) FROM favorites WHERE user_id = ?", (user_id,))
             count = cur.fetchone()[0]
             cur.execute("DELETE FROM favorites WHERE user_id = ?", (user_id,))
-            conn.commit()
             return count
 
-        return await self._run(_clear)
+        return await self._run(_clear, is_write=True)
 
     # ---------------------------------------------------------- playlists
     async def list_playlists(self, user_id: int) -> list[str]:
@@ -443,19 +524,18 @@ class Storage:
             cur = conn.cursor()
             cur.execute("SELECT COUNT(*) FROM playlists WHERE user_id = ?", (user_id,))
             count = cur.fetchone()[0]
-            if count >= limit:
+            if limit > 0 and count >= limit:
                 raise StorageError(f"Playlist limit of {limit} reached.")
             try:
                 cur.execute(
                     "INSERT INTO playlists (user_id, name, created_at) VALUES (?, ?, ?)",
                     (user_id, clean_name, time.time()),
                 )
-                conn.commit()
                 return cur.lastrowid or 0
             except sqlite3.IntegrityError:
                 raise StorageError("A playlist with that name already exists.") from None
 
-        return await self._run(_create)
+        return await self._run(_create, is_write=True)
 
     async def delete_playlist(self, user_id: int, name: str) -> bool:
         clean_name = name.strip()
@@ -469,10 +549,9 @@ class Storage:
             playlist_id = row[0]
             cur.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?", (playlist_id,))
             cur.execute("DELETE FROM playlists WHERE playlist_id = ?", (playlist_id,))
-            conn.commit()
             return True
 
-        return await self._run(_del)
+        return await self._run(_del, is_write=True)
 
     async def rename_playlist(self, user_id: int, old_name: str, new_name: str) -> bool:
         clean_old = old_name.strip()
@@ -487,12 +566,11 @@ class Storage:
                     "UPDATE playlists SET name = ? WHERE user_id = ? AND name = ?",
                     (clean_new, user_id, clean_old),
                 )
-                conn.commit()
                 return cur.rowcount > 0
             except sqlite3.IntegrityError:
                 raise StorageError("A playlist with the new name already exists.") from None
 
-        return await self._run(_rename)
+        return await self._run(_rename, is_write=True)
 
     async def get_playlist_tracks(self, user_id: int, name: str) -> list[StoredTrack]:
         clean_name = name.strip()
@@ -528,7 +606,7 @@ class Storage:
             playlist_id = row[0]
             cur.execute("SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?", (playlist_id,))
             count = cur.fetchone()[0]
-            if count >= limit:
+            if limit > 0 and count >= limit:
                 raise StorageError(f"Playlist track limit of {limit} reached.")
             next_pos = count + 1
             cur.execute(
@@ -538,10 +616,9 @@ class Storage:
                 """,
                 (playlist_id, next_pos, track.uri, track.title, track.artist, track.duration_ms, time.time()),
             )
-            conn.commit()
             return next_pos
 
-        return await self._run(_add)
+        return await self._run(_add, is_write=True)
 
     async def remove_playlist_track(self, user_id: int, name: str, position: int) -> StoredTrack:
         clean_name = name.strip()
@@ -566,14 +643,28 @@ class Storage:
                 "UPDATE playlist_tracks SET position = position - 1 WHERE playlist_id = ? AND position > ?",
                 (playlist_id, position),
             )
-            conn.commit()
             return removed
 
-        return await self._run(_remove)
+        return await self._run(_remove, is_write=True)
 
     # ----------------------------------------------------- queue snapshot
     async def save_queue_snapshot(self, guild_id: int, tracks: list[StoredTrack]) -> None:
-        data_json = json.dumps([asdict(t) for t in tracks])
+        raw_list = [
+            {
+                "uri": t.uri,
+                "title": t.title,
+                "artist": t.artist,
+                "duration_ms": t.duration_ms,
+                "requester_id": t.requester_id,
+            }
+            for t in tracks
+        ]
+        try:
+            import orjson
+
+            data_json = orjson.dumps(raw_list).decode("utf-8")
+        except ImportError:
+            data_json = json.dumps(raw_list, separators=(",", ":"))
 
         def _save(conn: sqlite3.Connection) -> None:
             cur = conn.cursor()
@@ -587,9 +678,8 @@ class Storage:
                 """,
                 (guild_id, data_json, time.time()),
             )
-            conn.commit()
 
-        await self._run(_save)
+        await self._run(_save, is_write=True, coalesce_key=("queue_snapshot", guild_id))
 
     async def get_queue_snapshot(self, guild_id: int) -> list[StoredTrack]:
         def _get(conn: sqlite3.Connection) -> list[StoredTrack]:
@@ -599,7 +689,12 @@ class Storage:
             if not row or not row[0]:
                 return []
             try:
-                items = json.loads(row[0])
+                try:
+                    import orjson
+
+                    items = orjson.loads(row[0])
+                except ImportError:
+                    items = json.loads(row[0])
                 return [StoredTrack(**item) for item in items]
             except Exception as exc:
                 log.warning("Corrupted queue snapshot for guild %s: %s", guild_id, exc)
@@ -611,9 +706,8 @@ class Storage:
         def _del(conn: sqlite3.Connection) -> None:
             cur = conn.cursor()
             cur.execute("DELETE FROM queue_snapshots WHERE guild_id = ?", (guild_id,))
-            conn.commit()
 
-        await self._run(_del)
+        await self._run(_del, is_write=True, coalesce_key=("queue_snapshot", guild_id))
 
     # ---------------------------------------------------- user data reset
     async def reset_user_data(self, user_id: int) -> None:
@@ -625,16 +719,15 @@ class Storage:
                 (user_id,),
             )
             cur.execute("DELETE FROM playlists WHERE user_id = ?", (user_id,))
-            conn.commit()
 
-        await self._run(_reset)
+        await self._run(_reset, is_write=True)
 
     # ---------------------------------------------------- json export
     async def export_all_json(self) -> dict[str, Any]:
         def _export(conn: sqlite3.Connection) -> dict[str, Any]:
-            cur = conn.cursor()
             export: dict[str, Any] = {"guild_settings": [], "favorites": [], "playlists": [], "queue_snapshots": []}
 
+            cur = conn.cursor()
             cur.execute("SELECT * FROM guild_settings")
             cols = [d[0] for d in cur.description]
             for row in cur.fetchall():
@@ -670,10 +763,11 @@ class Storage:
 
     async def delete_guild_data(self, guild_id: int) -> None:
         """Delete all guild settings and snapshots when the bot is removed from a guild."""
+        self._settings_cache.invalidate(guild_id)
+
         def _del(conn: sqlite3.Connection) -> None:
             cur = conn.cursor()
             cur.execute("DELETE FROM guild_settings WHERE guild_id = ?", (guild_id,))
             cur.execute("DELETE FROM queue_snapshots WHERE guild_id = ?", (guild_id,))
-            conn.commit()
 
-        await self._run(_del)
+        await self._run(_del, is_write=True)

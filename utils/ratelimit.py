@@ -113,7 +113,8 @@ class RateLimiter:
                     "idle_ttl": 60.0,
                 }
 
-        self.buckets: dict[str, dict[str, float]] = config.get("buckets", {})
+        self.enabled: bool = bool(config.get("enabled", True))
+        self.buckets: dict[str, dict[str, Any]] = config.get("buckets", {})
         self.max_keys: int = int(config.get("max_keys", 10000))
         self.idle_ttl: float = float(config.get("idle_ttl", 60.0))
         self.clock = clock
@@ -121,6 +122,26 @@ class RateLimiter:
         # Key: (bucket_name, id) -> deque of timestamps
         self._entries: OrderedDict[tuple[str, int | str], deque[float]] = OrderedDict()
         self._last_seen: dict[tuple[str, int | str], float] = {}
+
+    def is_bucket_enabled(self, bucket: str) -> bool:
+        """True if rate limiting is enabled globally and for this specific bucket."""
+        if not self.enabled:
+            return False
+        cfg = self.buckets.get(bucket)
+        if cfg:
+            return bool(cfg.get("enabled", True))
+        return True
+
+    def set_enabled(self, enabled: bool) -> None:
+        """Toggle rate limiting globally."""
+        self.enabled = enabled
+
+    def set_bucket_enabled(self, bucket: str, enabled: bool) -> None:
+        """Toggle rate limiting for a specific bucket."""
+        if bucket not in self.buckets:
+            self.buckets[bucket] = {"rate": 5.0, "per": 10.0, "enabled": enabled}
+        else:
+            self.buckets[bucket]["enabled"] = enabled
 
     def get_bucket_cfg(self, bucket: str) -> tuple[float, float]:
         """Return (rate, per) for a bucket, falling back to safe defaults."""
@@ -142,13 +163,22 @@ class RateLimiter:
         If ANY bucket is over the limit, returns (False, max_retry_after) without
         consuming any quota. If ALL are within limits, records the timestamp for
         each bucket and returns (True, 0.0).
+
+        Disabled buckets bypass checking and key storage completely.
         """
+        if not self.enabled:
+            return True, 0.0
+
+        active_pairs = [p for p in pairs if self.is_bucket_enabled(p[0])]
+        if not active_pairs:
+            return True, 0.0
+
         now = self.clock()
         max_retry: float = 0.0
         exhausted = False
 
-        # Phase 1: verify all pairs without modifying state
-        for bucket, entity_id in pairs:
+        # Phase 1: verify all active pairs without modifying state
+        for bucket, entity_id in active_pairs:
             rate, per = self.get_bucket_cfg(bucket)
             key = (bucket, entity_id)
             timestamps = self._entries.get(key)
@@ -169,8 +199,8 @@ class RateLimiter:
         if exhausted:
             return False, max(0.1, max_retry)
 
-        # Phase 2: consume for all pairs
-        for bucket, entity_id in pairs:
+        # Phase 2: consume for active pairs
+        for bucket, entity_id in active_pairs:
             _, per = self.get_bucket_cfg(bucket)
             key = (bucket, entity_id)
             cutoff = now - per

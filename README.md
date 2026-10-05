@@ -30,6 +30,9 @@ The bot connects to a Lavalink 4.x server as an audio client. Follow these steps
 ```yaml
 server:
   port: 2333
+  # 127.0.0.1 = only this PC. For a node on another machine use 0.0.0.0
+  # (or the node's IP), a STRONG password, and a firewall rule that only
+  # allows your bot's IP.
   address: 127.0.0.1
   http2:
     enabled: false
@@ -61,16 +64,20 @@ lavalink:
       channelMix: true
       lowPass: true
 
-    # Audio quality
+    # Audio quality. This is the main CPU cost per player. If a node's CPU
+    # ever saturates, drop resamplingQuality to MEDIUM first.
     opusEncodingQuality: 10
     resamplingQuality: HIGH
 
-    # Smoothness
+    # Smoothness and memory per player
     bufferDurationMs: 600
     frameBufferDurationMs: 5000
     trackStuckThresholdMs: 10000
     useSeekGhosting: true
-    playerUpdateInterval: 5
+    playerUpdateInterval: 10
+    # Optional, for nodes with many players and GC warnings in the log.
+    # Fewer allocations per player; the cost is non-instant volume changes.
+    # nonAllocatingFrameBuffer: true
 
     youtubeSearchEnabled: true
     soundcloudSearchEnabled: true
@@ -93,7 +100,7 @@ plugins:
         playback: false
     oauth:
       enabled: true
-      refreshToken: "refresh-token-here"
+      #refreshToken: "refresh-token-here"
     remoteCipher:
       url: "https://cipher.kikkia.dev/"
       userAgent: "my-music-bot"
@@ -107,7 +114,9 @@ logging:
     dev.lavalink.youtube.http.YoutubeOauth2Handler: INFO
     dev.lavalink.youtube.clients.skeleton.StreamingNonMusicClient: ERROR
   request:
-    enabled: true
+    # One log line per API request is heavy I/O with many players.
+    # Turn it back on temporarily when debugging.
+    enabled: false
     includeClientInfo: true
     includeHeaders: false
     includeQueryString: true
@@ -387,35 +396,62 @@ Custom emojis are loaded once at startup from `data/emojis.json`:
 - **Permission Requirements:** The emojis must be usable by the bot. They must either be uploaded as application emojis in the Discord Developer Portal or the bot must be a member of the guild that owns them.
 - **Graceful Fallback:** If `emojis.json` is missing, malformed, or has missing/invalid emoji IDs, the bot logs a warning and falls back to clean text labels for that button (`Loop`, `Previous`, `Pause`/`Resume`, `Skip`, `Stop`).
 
+## Unlimited Defaults & Scaling Configuration
+
+All artificial user-facing limits default to **0 (unlimited)**:
+- `MAX_QUEUE_SIZE=0`: No limit on queue size. Slotted items scale to 200,000+ tracks.
+- `MAX_PER_USER=0`: No cap on tracks queued per user.
+- `MAX_PLAYLIST_TRACKS=0`: Full playlist/album imports with streaming 200-track chunks.
+- `MAX_TRACK_SECONDS=0`: No duration cap on individual tracks.
+- `PLAY_COOLDOWN=0.0`: No cooldown between play requests.
+- `MAX_FAVORITES_PER_USER=0`: Unlimited personal favorites.
+- `MAX_PLAYLISTS_PER_USER=0`: Unlimited personal playlists.
+- `MAX_TRACKS_PER_PLAYLIST=0`: Unlimited tracks per personal playlist.
+- `MAX_CONCURRENT_LOADS=64`: High-throughput concurrent Lavalink track loading.
+- `PER_GUILD_CONCURRENT_LOADS=4`: Guild-level concurrent load limit.
+
+## Sharding & Multi-Node Lavalink
+
+- **Automatic Sharding (`AutoShardedBot`):** The bot automatically manages gateway shards according to server count. Shard reconnects and guild leave events are handled safely without dropping other shards.
+- **Multi-Node Lavalink (`LAVALINK_NODES`):** Configure multiple Lavalink nodes via JSON in `.env`:
+  ```bash
+  LAVALINK_NODES=[{"name":"node-1","host":"10.0.0.1","port":2333,"password":"secret","region":"us","secure":false},{"name":"node-2","host":"10.0.0.2","port":2333,"password":"secret","region":"us","secure":false}]
+  ```
+  - **Load Balancing:** New players are assigned to the node with the lowest player count and lowest penalty score.
+  - **Failover:** If a node drops, players automatically migrate to an active node and resume playback from their exact position.
+  - **Fallback:** If `LAVALINK_NODES` is not set, the bot seamlessly falls back to the legacy single-node variables (`LAVALINK_HOST`, `LAVALINK_PORT`, etc.).
+
+## Gateway Tuning & Speedups
+
+- **`MENTION_REPLY_ENABLED`:** Defaults to `true`. When set to `false`, the `guild_messages` intent and message event handler are dropped entirely, eliminating message processing overhead for massive server counts.
+- **C-Extensions & Speedups:** Windows wheels for `orjson`, `aiodns`, `Brotli`, `pycares`, and `backports.zstd` are installed and integrated for ultra-fast JSON serialization and asynchronous DNS resolution.
+- **Minimal Caching:** Message cache is disabled (`max_messages=None`), and member caching only retains voice-active members (`chunk_guilds_at_startup=False`).
+
 ## Central Rate Limiter (data/rate_limits.json)
 
-The bot features a sliding-window rate limiter with bounded memory and LRU eviction, configured via `data/rate_limits.json`:
-
+Rate limiting is **disabled by default** (`"enabled": false` in `data/rate_limits.json`), providing a zero-overhead fast path:
 ```json
 {
+  "enabled": false,
   "buckets": {
-    "commands": {"rate": 5, "per": 10.0},
-    "play": {"rate": 4, "per": 10.0},
-    "queue": {"rate": 8, "per": 10.0},
-    "library": {"rate": 6, "per": 10.0},
-    "views": {"rate": 4, "per": 10.0},
-    "components": {"rate": 3, "per": 3.0},
-    "guild": {"rate": 30, "per": 10.0}
+    "commands": {"rate": 5, "per": 10.0, "enabled": false},
+    "play": {"rate": 4, "per": 10.0, "enabled": false},
+    "queue": {"rate": 8, "per": 10.0, "enabled": false},
+    "library": {"rate": 6, "per": 10.0, "enabled": false},
+    "views": {"rate": 4, "per": 10.0, "enabled": false},
+    "components": {"rate": 3, "per": 3.0, "enabled": false},
+    "guild": {"rate": 30, "per": 10.0, "enabled": false}
   },
   "max_keys": 10000,
   "idle_ttl": 60.0
 }
 ```
-
-- **Choke points:** Checked atomically in `tree.interaction_check` (slash commands) and `BaseCardView.interaction_check` (buttons and selects).
-- **Owner bypass:** The configured `OWNER_ID` bypasses all rate limits.
-- **Single message:** Rate limits respond once, ephemerally, with `**Rate limited** • `Try again in Ns``.
-- **Autocomplete:** Exceeded autocomplete limits drop silently with an empty list.
+When enabled, token buckets track entities with bounded memory and LRU eviction. Exceeded limits respond ephemerally with `**Rate limited** • `Try again in Ns``.
 
 ## Status & Timing Diagnostics
 
 The `/status` slash command provides complete observability:
-- **Public fields:** Gateway latency, bot uptime, active players, Lavalink node connection and resource stats, voice channel bitrate vs server maximum.
+- **Public fields:** Gateway latency, bot uptime, active players, Lavalink node connection and resource stats, voice channel bitrate vs server maximum, and event loop lag (p50/p95/p99).
 - **Owner-only diagnostics:** Process memory (RSS), supervised task count, player registry size, cache sizes, Discord HTTP 429 rate limit counter, and per-command latency percentiles (p50 and p95 for acknowledgment latency and total execution duration).
 
 ## Message Catalog Patterns
@@ -437,15 +473,27 @@ All user-facing messages strictly follow three consistent patterns:
 - **Custom Emojis:** Custom emojis are strictly isolated to the 5 Now Playing card buttons. No other emojis are allowed anywhere else in the bot.
 - **Button Styles:** All buttons across all cards use `ButtonStyle.secondary`, with the sole exception of the `Stop` button on the Now Playing card which uses `ButtonStyle.danger`.
 
-## Verification & Auditing
+## Verification & Benchmarks
 
-Run the test suite and audit script:
+Run the complete verification protocol, soak test, and scale benchmark:
 
 ```powershell
+# 1. Compilation & Type Integrity
 .venv\Scripts\python.exe -m compileall -q .
+
+# 2. Complete Test Suite (211 tests)
 .venv\Scripts\python.exe -m pytest
+
+# 3. Linter & Style Consistency
 .venv\Scripts\ruff.exe check .
+
+# 4. Phase 8 Invariants & Style Audit
 .venv\Scripts\python.exe scripts/verify_phase8.py
+
+# 5. Soak Test (100,000 track unlimited queues, returns to baseline)
 .venv\Scripts\python.exe -m tests.run_soak --cycles 500 --guilds 25
+
+# 6. Scale Benchmark (2,000 simulated active guilds)
+.venv\Scripts\python.exe tests/run_scale.py --guilds 2000
 ```
 

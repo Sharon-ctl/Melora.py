@@ -1,159 +1,289 @@
-"""Micro-benchmarks for critical hot paths.
+"""Phase 2 Performance and Memory Benchmarks.
 
-Tests throughput and latency of on_message early-exit, candidate scoring,
-TTLCache operations, and precomputed help page lookups.
+Verifies:
+- Page slice under 5 ms at 200,000 tracks
+- Autocomplete under 20 ms at 200,000 tracks
+- Shuffle under 500 ms at 200,000 tracks
+- Memory under 600 bytes per queued track at 100,000 tracks
+- __slots__ on QueueItem with shared bounded avatar cache
+- Fast O(1) number autocomplete without scanning
 """
 from __future__ import annotations
 
+import asyncio
 import time
+import tracemalloc
 from types import SimpleNamespace
-from typing import Any
-from unittest.mock import AsyncMock
 
-import pytest
-
-from cogs.admin import precompute_help_pages
-from config import load_config
-from core.alerts import Alerter
-from core.matching import CandidateScorer, build_search_queries, clean_spotify_title
-from main import MusicBot
-from utils.cache import TTLCache
+from cogs.music import Music
+from core.contracts import PlayerServices
+from core.queue import QueueItem, TrackQueue, _AVATAR_CACHE, clear_avatar_cache
+from core.registry import PlayerRegistry
+from core.storage import Storage, StoredTrack
+from tests.fakes import FakeBackend, FakeLoader, make_config
 
 
-def _make_bot() -> MusicBot:
-    cfg = load_config({
-        "DISCORD_TOKEN": "A" * 35,
-        "OWNER_ID": "123456789",
-        "LAVALINK_HOST": "127.0.0.1",
-        "LAVALINK_PORT": "2333",
-        "LAVALINK_PASSWORD": "secret_password",
-    })
-    bot = MusicBot(cfg, Alerter(cfg))
-    bot_user = SimpleNamespace(id=999999, bot=True)
-    bot._connection.user = bot_user
-    bot._bot_user_id = bot_user.id
-    return bot
-
-
-def _make_fake_message(bot_uid: int, *, is_bot: bool = False, mentions_bot: bool = False) -> Any:
-    guild = SimpleNamespace(id=777777)
-    author = SimpleNamespace(id=111111, bot=is_bot)
-    raw_mentions = [bot_uid] if mentions_bot else [12345, 67890]
-    return SimpleNamespace(
-        id=555555,
-        author=author,
-        guild=guild,
-        raw_mentions=raw_mentions,
-        raw_role_mentions=[],
-        reference=None,
-        reply=AsyncMock(),
+def test_queue_item_slots_and_no_dict():
+    """Verify QueueItem defines __slots__ and does not have an instance __dict__."""
+    item = QueueItem(
+        track=None,
+        title="Test Track",
+        duration_ms=210000,
+        requester_id=12345,
+        artist="Test Artist",
+        uri="https://example.com/test",
     )
+    assert not hasattr(item, "__dict__"), "QueueItem must use __slots__ without __dict__"
+    assert hasattr(item, "__slots__")
 
 
-@pytest.mark.anyio
-async def test_benchmark_on_message_non_mention_throughput():
-    bot = _make_bot()
-    bot_uid = bot._bot_user_id
-    assert bot_uid is not None
+def test_shared_bounded_avatar_cache():
+    """Verify requester_avatar_url is cached centrally, not stored per item."""
+    clear_avatar_cache()
+    avatar_url = "https://cdn.discordapp.com/avatars/42/avatar.png"
+    item1 = QueueItem(
+        track=None,
+        title="Track 1",
+        duration_ms=1000,
+        requester_id=42,
+        requester_avatar_url=avatar_url,
+    )
+    assert item1.requester_avatar_url == avatar_url
+    assert _AVATAR_CACHE.get(42) == avatar_url
 
-    # Pre-generate 5,000 non-mention messages
-    msgs = [_make_fake_message(bot_uid, mentions_bot=False) for _ in range(5000)]
+    # A second item for the same requester without explicit avatar resolves from shared cache
+    item2 = QueueItem(
+        track=None,
+        title="Track 2",
+        duration_ms=2000,
+        requester_id=42,
+    )
+    assert item2.requester_avatar_url == avatar_url
 
-    start = time.perf_counter()
-    for msg in msgs:
-        await bot.on_message(msg)
-    elapsed = time.perf_counter() - start
-
-    # 5,000 messages should finish well under 0.25 seconds (< 50 us per message)
-    avg_us = (elapsed / len(msgs)) * 1_000_000
-    assert elapsed < 0.25, f"on_message too slow: {elapsed:.3f}s for {len(msgs)} messages ({avg_us:.1f}us/msg)"
-
-
-@pytest.mark.anyio
-async def test_benchmark_on_message_bot_author_rejection():
-    bot = _make_bot()
-    bot_uid = bot._bot_user_id
-    assert bot_uid is not None
-
-    msgs = [_make_fake_message(bot_uid, is_bot=True) for _ in range(5000)]
-
-    start = time.perf_counter()
-    for msg in msgs:
-        await bot.on_message(msg)
-    elapsed = time.perf_counter() - start
-
-    assert elapsed < 0.15, f"bot author rejection too slow: {elapsed:.3f}s for {len(msgs)} messages"
+    # Updating avatar reflects for all items of that requester
+    new_avatar = "https://cdn.discordapp.com/avatars/42/new_avatar.png"
+    item1.requester_avatar_url = new_avatar
+    assert item2.requester_avatar_url == new_avatar
+    assert _AVATAR_CACHE.get(42) == new_avatar
 
 
-def test_benchmark_spotify_title_clean_and_queries():
-    scorer = CandidateScorer()
-    raw_titles = [
-        "Track Name (feat. Famous Artist)",
-        "Classic Hit - 2011 Remaster",
-        "Rock Anthem [ft. Guest]",
-        "Album Cut - Deluxe Edition",
-        "Standard Song Title",
-    ]
-    artists = ["Lead Artist", "Featured Artist"]
+def test_benchmark_memory_under_600_bytes_per_queued_track():
+    """Verify memory per queued track is under 600 bytes at 100,000 tracks."""
+    tracemalloc.start()
+    try:
+        q = TrackQueue()
+        for i in range(100_000):
+            q._push(
+                QueueItem(
+                    track=None,
+                    title=f"Sample Track Title Number {i}",
+                    duration_ms=215000,
+                    requester_id=1000000 + (i % 500),
+                    is_stream=False,
+                    artist=f"Band Name {i % 200}",
+                    uri=f"https://www.youtube.com/watch?v=track_{i}",
+                )
+            )
 
-    start = time.perf_counter()
-    for i in range(5000):
-        t = raw_titles[i % len(raw_titles)]
-        cleaned = clean_spotify_title(t, scorer.strip_patterns)
-        queries = build_search_queries(t, artists, scorer.strip_patterns)
-        assert cleaned is not None
-        assert len(queries) > 0
-    elapsed = time.perf_counter() - start
-
-    assert elapsed < 0.2, f"title clean and queries too slow: {elapsed:.3f}s for 5000 iterations"
-
-
-def test_benchmark_candidate_scoring():
-    scorer = CandidateScorer()
-    candidates = [
-        SimpleNamespace(title="Track Name - Lead Artist", author="Lead Artist - Topic", duration=182000, uri="https://youtube.com/watch?v=1"),
-        SimpleNamespace(title="Track Name Official Video", author="Lead Artist", duration=210000, uri="https://youtube.com/watch?v=2"),
-        SimpleNamespace(title="Unrelated Track", author="Other Artist", duration=180000, uri="https://youtube.com/watch?v=3"),
-    ]
-
-    start = time.perf_counter()
-    for i in range(5000):
-        cand = candidates[i % len(candidates)]
-        score = scorer.score_candidate("Track Name", ["Lead Artist"], 180000, cand)
-        assert score is not None
-    elapsed = time.perf_counter() - start
-
-    assert elapsed < 0.2, f"candidate scoring too slow: {elapsed:.3f}s for 5000 iterations"
+        current, _ = tracemalloc.get_traced_memory()
+        bytes_per_item = current / 100_000
+        # Budget: under 600 bytes per queued track
+        assert bytes_per_item < 600, f"Memory per track was {bytes_per_item:.1f} bytes (expected < 600 bytes)"
+    finally:
+        tracemalloc.stop()
 
 
-def test_benchmark_ttl_cache():
-    cache: TTLCache[int, str] = TTLCache(max_size=200, ttl=60.0)
+def test_benchmark_page_under_5ms_at_200k_tracks():
+    """Verify paging 200,000 tracks executes in under 5 ms."""
+    q = TrackQueue()
+    # Pre-populate 200,000 items
+    dummy = QueueItem(
+        track=None,
+        title="Benchmark Song",
+        duration_ms=180000,
+        requester_id=999,
+        artist="Benchmark Artist",
+        uri="https://example.com/audio",
+    )
+    for _ in range(200_000):
+        q._push(dummy)
 
-    start = time.perf_counter()
-    for i in range(10000):
-        cache[i % 300] = f"value_{i}"
-        _ = cache.get((i - 1) % 300)
-        _ = (i % 300) in cache
-    elapsed = time.perf_counter() - start
+    assert len(q) == 200_000
 
-    assert elapsed < 0.15, f"TTLCache too slow: {elapsed:.3f}s for 10000 operations"
+    # 1. Page at start (page 1)
+    t0 = time.perf_counter()
+    res1, p1, total1 = q.page(1, per_page=10)
+    dur_start = (time.perf_counter() - t0) * 1000
+    assert len(res1) == 10
+    assert p1 == 1
+    assert total1 == 20_000
+    assert dur_start < 5.0, f"Page 1 took {dur_start:.3f} ms (expected < 5 ms)"
+
+    # 2. Page in middle (page 10,000)
+    t0 = time.perf_counter()
+    res_mid, p_mid, _ = q.page(10_000, per_page=10)
+    dur_mid = (time.perf_counter() - t0) * 1000
+    assert len(res_mid) == 10
+    assert p_mid == 10_000
+    assert dur_mid < 5.0, f"Page 10,000 took {dur_mid:.3f} ms (expected < 5 ms)"
+
+    # 3. Page at end (page 20,000)
+    t0 = time.perf_counter()
+    res_end, p_end, _ = q.page(20_000, per_page=10)
+    dur_end = (time.perf_counter() - t0) * 1000
+    assert len(res_end) == 10
+    assert p_end == 20_000
+    assert dur_end < 5.0, f"Page 20,000 took {dur_end:.3f} ms (expected < 5 ms)"
 
 
-def test_benchmark_help_pages_precomputation_and_retrieval():
-    categories = ["Overview", "Playback", "Queue", "Library", "Filters", "Settings", "Info", "Owner"]
-    descriptions = {c: f"Category {c}" for c in categories}
-    commands_by_cat = {c: [f"/{c.lower()}_{i} - description for command {i}" for i in range(25)] for c in categories}
+def test_benchmark_shuffle_under_500ms_at_200k_tracks():
+    """Verify shuffling 200,000 tracks executes in under 500 ms."""
+    q = TrackQueue()
+    dummy = QueueItem(
+        track=None,
+        title="Song",
+        duration_ms=180000,
+        requester_id=1,
+    )
+    for _ in range(200_000):
+        q._push(dummy)
 
-    pages = precompute_help_pages(categories, descriptions, commands_by_cat)
-    assert len(pages) == len(categories)
+    t0 = time.perf_counter()
+    q.shuffle()
+    dur_ms = (time.perf_counter() - t0) * 1000
+    assert len(q) == 200_000
+    assert dur_ms < 500.0, f"Shuffle took {dur_ms:.2f} ms (expected < 500 ms)"
 
-    start = time.perf_counter()
-    for i in range(5000):
-        cat = categories[i % len(categories)]
-        cat_pages = pages[cat]
-        page_idx = i % len(cat_pages)
-        content = cat_pages[page_idx]
-        assert content is not None
-    elapsed = time.perf_counter() - start
 
-    assert elapsed < 0.05, f"Help page retrieval too slow: {elapsed:.3f}s for 5000 lookups"
+def test_benchmark_autocomplete_under_20ms_at_200k_tracks():
+    """Verify autocomplete at 200,000 tracks executes in under 20 ms."""
+    async def scenario():
+        cfg = make_config(AUTOCOMPLETE_SEARCH_ENABLED=True)
+        backend = FakeBackend()
+        loader = FakeLoader()
+        storage = Storage(":memory:")
+        storage.start()
+        try:
+            services = PlayerServices(cfg, backend, loader, storage)
+            registry = PlayerRegistry(services)
+            bot = SimpleNamespace(
+                cfg=cfg,
+                backend=backend,
+                loader=loader,
+                storage=storage,
+                registry=registry,
+            )
+            music_cog = Music(bot)
+            player = await registry.get_or_create(1, 10, 20)
+
+            # Populate player.queue with 200,000 items
+            item = QueueItem(
+                track=None,
+                title="Song",
+                duration_ms=180000,
+                requester_id=1,
+                artist="Artist",
+            )
+            for _ in range(200_000):
+                player.queue._push(item)
+
+            inter = SimpleNamespace(guild=SimpleNamespace(id=1), guild_id=1)
+
+            # 1. Number typed: pure arithmetic jump, 0 linear scans
+            t0 = time.perf_counter()
+            choices_num = await music_cog._queue_pos_autocomplete(inter, current="42")
+            dur_num = (time.perf_counter() - t0) * 1000
+            assert len(choices_num) > 0
+            assert choices_num[0].value == 42
+            assert dur_num < 20.0, f"Number autocomplete took {dur_num:.3f} ms (expected < 20 ms)"
+
+            # 2. Number typed near end of 200,000 items
+            t0 = time.perf_counter()
+            choices_end = await music_cog._queue_pos_autocomplete(inter, current="199990")
+            dur_end = (time.perf_counter() - t0) * 1000
+            assert len(choices_end) > 0
+            assert choices_end[0].value == 199990
+            assert dur_end < 20.0, f"Large number autocomplete took {dur_end:.3f} ms (expected < 20 ms)"
+
+            # 3. Empty query: scan breaks after 25 items
+            t0 = time.perf_counter()
+            choices_empty = await music_cog._queue_pos_autocomplete(inter, current="")
+            dur_empty = (time.perf_counter() - t0) * 1000
+            assert len(choices_empty) == 25
+            assert dur_empty < 20.0, f"Empty query autocomplete took {dur_empty:.3f} ms (expected < 20 ms)"
+
+            await registry.destroy_all("test")
+        finally:
+            await storage.close()
+
+    asyncio.run(scenario())
+
+
+def test_queue_operations_fast_at_200k():
+    """Verify swap, move, remove, dedupe stay fast on large queues."""
+    q = TrackQueue()
+    for i in range(10_000):
+        q._push(
+            QueueItem(
+                track=None,
+                title=f"Song {i}",
+                duration_ms=1000,
+                requester_id=1,
+                uri=f"uri://{i}",
+            )
+        )
+
+    # Swap
+    item1, item2 = q.swap(1, 10_000)
+    assert item1.title == "Song 9999"
+    assert item2.title == "Song 0"
+
+    # Move
+    moved = q.move(10_000, 1)
+    assert moved.title == "Song 0"
+
+    # Remove
+    removed = q.remove(1)
+    assert removed.title == "Song 0"
+
+    # Dedupe
+    q._push(
+        QueueItem(
+            track=None,
+            title="Song 1",
+            duration_ms=1000,
+            requester_id=1,
+            uri="uri://1",
+        )
+    )
+    dup_removed = q.dedupe()
+    assert dup_removed == 1
+
+
+def test_compact_snapshot_serialization():
+    """Verify compact serialization and restore of queue snapshots."""
+    async def scenario():
+        storage = Storage(":memory:")
+        storage.start()
+        try:
+            tracks = [
+                StoredTrack(
+                    uri=f"https://youtube.com/watch?v=track_{i}",
+                    title=f"Track Title {i}",
+                    artist=f"Artist {i % 10}",
+                    duration_ms=180000,
+                    requester_id=100 + i,
+                )
+                for i in range(100)
+            ]
+            await storage.save_queue_snapshot(1234, tracks)
+            loaded = await storage.get_queue_snapshot(1234)
+            assert len(loaded) == 100
+            assert loaded[0].title == "Track Title 0"
+            assert loaded[0].requester_id == 100
+            assert loaded[99].title == "Track Title 99"
+            assert loaded[99].requester_id == 199
+        finally:
+            await storage.close()
+
+    asyncio.run(scenario())

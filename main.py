@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import random
 import signal
 import sys
 import threading
@@ -45,17 +46,41 @@ EXIT_CRASH = 1
 EXIT_CONFIG = 2
 
 
+def configure_dns_resolver() -> None:
+    """Ensure aiohttp DNS resolution is robust on Windows.
+
+    When aiodns/c-ares cannot locate Windows adapter DNS servers in the registry,
+    it defaults nameservers to ['127.0.0.1'], which causes all DNS queries to fail
+    with ClientConnectorDNSError. When this occurs, fall back to native ThreadedResolver
+    (WinSock getaddrinfo).
+    """
+    try:
+        import aiodns
+        import aiohttp.connector
+        import aiohttp.resolver
+
+        r = aiodns.DNSResolver()
+        if r.nameservers == ["127.0.0.1"] or not r.nameservers:
+            aiohttp.connector.DefaultResolver = aiohttp.resolver.ThreadedResolver
+    except Exception:
+        pass
+
+
+configure_dns_resolver()
+
+
 def _no_prefix(bot: commands.Bot, message: discord.Message) -> str:
     """Prefix commands are not used. Message events are not even received."""
     return "\x00"
 
 
-class MusicBot(commands.Bot):
+class MusicBot(commands.AutoShardedBot):
     def __init__(self, cfg: Config, alerter: Alerter) -> None:
         intents = discord.Intents.none()
         intents.guilds = True
         intents.voice_states = True
-        intents.guild_messages = True
+        if cfg.mention_reply_enabled:
+            intents.guild_messages = True
         cache_flags = discord.MemberCacheFlags.none()
         cache_flags.voice = True
         super().__init__(
@@ -68,6 +93,7 @@ class MusicBot(commands.Bot):
             help_command=None,
             allowed_mentions=discord.AllowedMentions.none(),
             activity=discord.Activity(type=discord.ActivityType.listening, name="/help"),
+            enable_debug_events=False,
         )
         self.cfg = cfg
         self.alerter = alerter
@@ -184,8 +210,29 @@ class MusicBot(commands.Bot):
 
             record_handler_time(cmd_name, duration)
 
+    async def on_shard_ready(self, shard_id: int) -> None:
+        log.info("Shard %d is ready (%d total shards)", shard_id, getattr(self, "shard_count", 1))
+
+    async def on_shard_disconnect(self, shard_id: int) -> None:
+        log.warning("Shard %d disconnected", shard_id)
+
+    async def on_shard_resumed(self, shard_id: int) -> None:
+        log.info("Shard %d resumed session", shard_id)
+
+    def dispatch(self, event_name: str, /, *args: Any, **kwargs: Any) -> None:
+        if event_name == "message" and not getattr(self.cfg, "mention_reply_enabled", True):
+            return
+        super().dispatch(event_name, *args, **kwargs)
+
     async def on_ready(self) -> None:
-        log.info("Ready as %s in %d guilds", self.user, len(self.guilds))
+        guild_count = len(self.guilds)
+        log.info("Ready as %s in %d guilds (%d shards)", self.user, guild_count, getattr(self, "shard_count", 1))
+        if getattr(self.cfg, "mention_reply_enabled", True) and guild_count > 500:
+            log.warning(
+                "MENTION_REPLY_ENABLED is true with %d servers: every message event is delivered to the bot. "
+                "For lower event-loop lag and gateway traffic, set MENTION_REPLY_ENABLED=false.",
+                guild_count,
+            )
         if not self._startup_done:
             self._startup_done = True
             # Cache IDs for zero-alloc on_message early-exit
@@ -232,10 +279,14 @@ class MusicBot(commands.Bot):
                 log.debug("Component guard response error: %s", exc)
 
     async def on_message(self, message: discord.Message) -> None:
-        # Hot path: reject non-mentions with zero awaits / zero allocations
+        # Hot path: reject immediately if disabled or non-mentions with zero awaits / zero allocations
+        if not getattr(self.cfg, "mention_reply_enabled", True):
+            return
         if message.author.bot:
             return
         if message.guild is None:
+            return
+        if getattr(self, "is_load_shedding", False) or getattr(getattr(self, "registry", None), "is_load_shedding", False):
             return
         bot_uid = self._bot_user_id
         if not bot_uid:
@@ -327,53 +378,94 @@ class MusicBot(commands.Bot):
         fixed = await self.registry.reconcile("startup sweep")
         log.info("Startup sweep finished (%d fixed)", fixed)
 
-        # 24/7 rejoin and queue restore
-        for guild in self.guilds:
-            try:
-                s = await self.storage.get_guild_settings(guild.id)
-                if s.voice_247_channel_id:
-                    vc = guild.get_channel(s.voice_247_channel_id)
-                    me = guild.me
-                    if isinstance(vc, (discord.VoiceChannel, discord.StageChannel)) and isinstance(me, discord.Member):
-                        perms = vc.permissions_for(me)
-                        if perms.view_channel and perms.connect and perms.speak:
-                            text_id = s.restrict_channel_id
-                            if not text_id and guild.text_channels:
-                                text_id = guild.text_channels[0].id
-                            player = await self.registry.get_or_create(guild.id, vc.id, text_id or 0)
-                            player.is_247 = True
-                            if s.restore_queue:
-                                snapshot = await self.storage.get_queue_snapshot(guild.id)
-                                if snapshot:
-                                    has_avatar_fn = hasattr(self.backend, "bot_avatar_url")
-                                    bot_avatar = self.backend.bot_avatar_url() if has_avatar_fn else None
-                                    bot_id = self.backend.bot_id() if hasattr(self.backend, "bot_id") else 0
-                                    items = [
-                                        (
-                                            QueueItem.from_spotify(
-                                                t,
-                                                t.requester_id or bot_id,
-                                                requester_avatar_url=bot_avatar,
-                                            )
-                                            if parse_spotify_url(t.uri)
-                                            else QueueItem(
-                                                track=None,
-                                                title=t.title,
-                                                duration_ms=t.duration_ms,
-                                                requester_id=t.requester_id or bot_id,
-                                                artist=t.artist,
-                                                uri=t.uri,
-                                                query=t.uri,
-                                                requester_avatar_url=bot_avatar,
-                                            )
-                                        )
-                                        for t in snapshot
-                                    ]
-                                    await player.enqueue(items)
-                                    await self.storage.delete_queue_snapshot(guild.id)
-                                    log.info("guild=%s restored %d tracks from snapshot", guild.id, len(items))
-            except Exception as exc:
-                log.debug("guild=%s 24/7 rejoin failed: %s", guild.id, exc)
+        # 24/7 rejoin and queue restore staggered with bounded concurrency and jitter
+        guilds = list(self.guilds)
+        total_guilds = len(guilds)
+        rejoined_count = 0
+        restored_tracks = 0
+        restored_guilds = 0
+        sem = asyncio.Semaphore(16)
+
+        async def _process_guild(guild: discord.Guild) -> None:
+            nonlocal rejoined_count, restored_tracks, restored_guilds
+            if getattr(guild, "unavailable", False):
+                return
+            if hasattr(self, "get_shard"):
+                shard = self.get_shard(guild.shard_id)
+                if shard is not None and shard.is_closed():
+                    log.debug("guild=%s shard %d is closed; skipping 24/7 rejoin", guild.id, guild.shard_id)
+                    return
+            async with sem:
+                await asyncio.sleep(random.uniform(0.01, 0.05))
+                try:
+                    s = await self.storage.get_guild_settings(guild.id)
+                    if s.voice_247_channel_id:
+                        vc = guild.get_channel(s.voice_247_channel_id)
+                        me = guild.me
+                        if isinstance(vc, (discord.VoiceChannel, discord.StageChannel)) and isinstance(me, discord.Member):
+                            perms = vc.permissions_for(me)
+                            if perms.view_channel and perms.connect and perms.speak:
+                                text_id = s.restrict_channel_id
+                                if not text_id and guild.text_channels:
+                                    text_id = guild.text_channels[0].id
+                                player = await self.registry.get_or_create(guild.id, vc.id, text_id or 0)
+                                player.is_247 = True
+                                rejoined_count += 1
+                                if s.restore_queue:
+                                    snapshot = await self.storage.get_queue_snapshot(guild.id)
+                                    if snapshot:
+                                        has_avatar_fn = hasattr(self.backend, "bot_avatar_url")
+                                        bot_avatar = self.backend.bot_avatar_url() if has_avatar_fn else None
+                                        bot_id = self.backend.bot_id() if hasattr(self.backend, "bot_id") else 0
+                                        chunk_size = 500
+                                        total_for_guild = 0
+                                        for i in range(0, len(snapshot), chunk_size):
+                                            chunk = snapshot[i : i + chunk_size]
+                                            items = [
+                                                (
+                                                    QueueItem.from_spotify(
+                                                        t,
+                                                        t.requester_id or bot_id,
+                                                        requester_avatar_url=bot_avatar,
+                                                    )
+                                                    if parse_spotify_url(t.uri)
+                                                    else QueueItem(
+                                                        track=None,
+                                                        title=t.title,
+                                                        duration_ms=t.duration_ms,
+                                                        requester_id=t.requester_id or bot_id,
+                                                        artist=t.artist,
+                                                        uri=t.uri,
+                                                        query=t.uri,
+                                                        requester_avatar_url=bot_avatar,
+                                                    )
+                                                )
+                                                for t in chunk
+                                            ]
+                                            await player.enqueue(items)
+                                            total_for_guild += len(items)
+                                            if i + chunk_size < len(snapshot):
+                                                await asyncio.sleep(0)
+                                        await self.storage.delete_queue_snapshot(guild.id)
+                                        restored_tracks += total_for_guild
+                                        restored_guilds += 1
+                                        if total_guilds <= 100:
+                                            log.info("guild=%s restored %d tracks from snapshot", guild.id, total_for_guild)
+                except Exception as exc:
+                    log.debug("guild=%s 24/7 rejoin failed: %s", guild.id, exc)
+
+        tasks = [_process_guild(g) for g in guilds]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        if total_guilds > 100:
+            log.info(
+                "Startup 24/7 complete for %d servers: %d rejoined, %d tracks restored across %d servers",
+                total_guilds,
+                rejoined_count,
+                restored_tracks,
+                restored_guilds,
+            )
 
     async def _heartbeat_loop(self) -> None:
         while True:
@@ -412,6 +504,7 @@ class MusicBot(commands.Bot):
         await self._step("close active views", ACTIVE_VIEWS.close_all())
         registry = getattr(self, "registry", None)
         if registry is not None:
+            registry.stop_background_tasks()
             await self._step("destroy players", registry.destroy_all("shutdown"))
         lavalink_client = getattr(self, "lavalink", None)
         if lavalink_client is not None:

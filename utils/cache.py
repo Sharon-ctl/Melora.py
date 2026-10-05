@@ -66,6 +66,10 @@ class TTLCache(Generic[K, V]):
     def clear(self) -> None:
         self._data.clear()
 
+    def invalidate(self, key: K) -> None:
+        """Remove a key from cache if present."""
+        self._data.pop(key, None)
+
 
 class CooldownTracker:
     """Per-key cooldowns with expiry pruning and a maximum number of records."""

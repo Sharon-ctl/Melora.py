@@ -611,10 +611,14 @@ def volume_updated(level: int, limit: int | None = None) -> str:
 
 
 def max_duration_set(minutes: int) -> str:
+    if minutes <= 0:
+        return "Set max duration to **Unlimited**"
     return f"Set max duration to **{minutes} min**"
 
 
 def max_queue_set(count: int) -> str:
+    if count <= 0:
+        return "Set max queue to **Unlimited**"
     return f"Set max queue to **{count} tracks**"
 
 

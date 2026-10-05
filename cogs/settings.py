@@ -54,8 +54,19 @@ class Settings(commands.Cog):
         dj_role_str = f"<@&{s.dj_role_id}>" if s.dj_role_id else "None"
         restrict_str = f"<#{s.restrict_channel_id}>" if s.restrict_channel_id else "None (all channels allowed)"
         voice_247_str = f"<#{s.voice_247_channel_id}>" if s.voice_247_channel_id else "Disabled"
-        max_dur_str = f"{s.max_duration} min" if s.max_duration else f"{self.bot.cfg.max_track_seconds // 60} min (default)"
-        max_q_str = str(s.max_queue) if s.max_queue else f"{self.bot.cfg.max_queue_size} (default)"
+        if s.max_duration > 0:
+            max_dur_str = f"{s.max_duration} min"
+        elif self.bot.cfg.max_track_seconds > 0:
+            max_dur_str = f"{self.bot.cfg.max_track_seconds // 60} min (default)"
+        else:
+            max_dur_str = "Unlimited"
+
+        if s.max_queue > 0:
+            max_q_str = str(s.max_queue)
+        elif self.bot.cfg.max_queue_size > 0:
+            max_q_str = f"{self.bot.cfg.max_queue_size} (default)"
+        else:
+            max_q_str = "Unlimited"
 
         lines = [
             "### Server Settings",
@@ -152,13 +163,13 @@ class Settings(commands.Cog):
         except StorageError:
             await reply(interaction, messages.storage_unavailable(), ephemeral=True)
 
-    @settings_group.command(name="max-queue", description="Set maximum queue size (0 uses default)")
-    @app_commands.describe(count="Maximum number of tracks in queue")
+    @settings_group.command(name="max-queue", description="Set maximum queue size (0 for unlimited)")
+    @app_commands.describe(count="Maximum number of tracks in queue (0 for unlimited)")
     @app_commands.guild_only()
     async def settings_max_queue(
         self,
         interaction: discord.Interaction,
-        count: app_commands.Range[int, 0, 10000],
+        count: app_commands.Range[int, 0, 500000],
     ) -> None:
         self._require_manage_guild(interaction)
         guild_id = interaction.guild_id or 0
@@ -167,6 +178,9 @@ class Settings(commands.Cog):
 
         try:
             await self.bot.storage.update_guild_settings(guild_id, max_queue=count)
+            player = self.bot.registry.get(guild_id)
+            if player is not None:
+                player.queue.max_size = count if count > 0 else self.bot.cfg.max_queue_size
             await reply(interaction, messages.max_queue_set(count), ephemeral=True)
         except StorageError:
             await reply(interaction, messages.storage_unavailable(), ephemeral=True)

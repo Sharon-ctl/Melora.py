@@ -74,6 +74,7 @@ __all__ = (
 NEUTRAL_GRAY_ACCENT = discord.Colour(0x4A4D53)
 CARD_SEND_TIMEOUT = 10.0
 _NO_MENTIONS = discord.AllowedMentions.none()
+_IN_FLIGHT_MESSAGES: set[int] = set()
 
 
 def secondary_button(
@@ -171,6 +172,25 @@ class BaseCardView(LayoutView):
         self.is_ephemeral: bool = False
         self._client: discord.Client | None = None
         self._stopped_or_timed_out: bool = False
+
+    async def _scheduled_task(self, item: Any, interaction: discord.Interaction) -> None:
+        """Silent per-message button guard: while one press is running, quietly defer subsequent presses."""
+        msg = getattr(interaction, "message", None)
+        msg_id = getattr(msg, "id", None) if msg else None
+        if msg_id is not None:
+            if msg_id in _IN_FLIGHT_MESSAGES:
+                if hasattr(interaction, "response") and not _interaction_is_done(interaction):
+                    try:
+                        await interaction.response.defer()
+                    except Exception as defer_exc:
+                        log.debug("Silent defer failed: %s", defer_exc)
+                return
+            _IN_FLIGHT_MESSAGES.add(msg_id)
+        try:
+            await super()._scheduled_task(item, interaction)
+        finally:
+            if msg_id is not None:
+                _IN_FLIGHT_MESSAGES.discard(msg_id)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         client = getattr(interaction, "client", None)
@@ -643,6 +663,25 @@ class NowPlayingView(LayoutView):
         self.container: Container[Any] | None = None
         if getattr(player_ref, "current", None) is not None:
             self.render()
+
+    async def _scheduled_task(self, item: Any, interaction: discord.Interaction) -> None:
+        """Silent per-message button guard: while one press is running, quietly defer subsequent presses."""
+        msg = getattr(interaction, "message", None)
+        msg_id = getattr(msg, "id", None) if msg else None
+        if msg_id is not None:
+            if msg_id in _IN_FLIGHT_MESSAGES:
+                if hasattr(interaction, "response") and not _interaction_is_done(interaction):
+                    try:
+                        await interaction.response.defer()
+                    except Exception as defer_exc:
+                        log.debug("Silent defer failed: %s", defer_exc)
+                return
+            _IN_FLIGHT_MESSAGES.add(msg_id)
+        try:
+            await super()._scheduled_task(item, interaction)
+        finally:
+            if msg_id is not None:
+                _IN_FLIGHT_MESSAGES.discard(msg_id)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         client = interaction.client

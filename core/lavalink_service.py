@@ -19,6 +19,7 @@ from lavalink.errors import ClientError, RequestError
 from lavalink.server import LoadResult, LoadType
 
 from config import Config
+from utils.cache import TTLCache
 from utils.errors import BotUserError, LoadFailed, NoMatches, NodeOffline
 from utils.text import clean
 
@@ -45,17 +46,21 @@ class LavalinkService:
         self._client = client
         self._cfg = cfg
         self._semaphore = asyncio.Semaphore(cfg.max_concurrent_loads)
+        self._per_guild_concurrency = getattr(cfg, "per_guild_concurrent_loads", 4)
         self._slots: dict[int, list[Any]] = {}
+        self._cache: TTLCache[str, LoadResult] = TTLCache(max_size=2000, ttl=300.0)
+        self._negative_cache: TTLCache[str, Exception] = TTLCache(max_size=1000, ttl=30.0)
+        self._flight: dict[str, asyncio.Future[LoadResult]] = {}
 
     def has_node(self) -> bool:
         return bool(self._client.node_manager.available_nodes)
 
     @asynccontextmanager
     async def guild_slot(self, guild_id: int) -> AsyncIterator[None]:
-        """Serialize loads per guild. The entry is removed when nobody uses it."""
+        """Serialize loads per guild with configurable concurrency. The entry is removed when nobody uses it."""
         entry = self._slots.get(guild_id)
         if entry is None:
-            entry = [asyncio.Lock(), 0]
+            entry = [asyncio.Semaphore(self._per_guild_concurrency), 0]
             self._slots[guild_id] = entry
         entry[1] += 1
         acquired = False
@@ -78,28 +83,93 @@ class LavalinkService:
     async def _fetch(self, identifier: str) -> LoadResult:
         if not self.has_node():
             raise NodeOffline()
-        try:
-            await asyncio.wait_for(self._semaphore.acquire(), timeout=3.0)
-        except (asyncio.TimeoutError, TimeoutError):
-            from utils.errors import ServerBusy
 
-            raise ServerBusy() from None
+        # Check negative cache (30-second TTL)
+        neg_exc = self._negative_cache.get(identifier)
+        if neg_exc is not None:
+            raise neg_exc
+
+        # Check positive cache
+        cached = self._cache.get(identifier)
+        if cached is not None:
+            return cached
+
+        # Single-flight deduplication: reuse in-flight future if identical load is pending
+        fut = self._flight.get(identifier)
+        if fut is not None:
+            return await fut
+
+        loop = asyncio.get_running_loop()
+        flight_fut: asyncio.Future[LoadResult] = loop.create_future()
+        self._flight[identifier] = flight_fut
+
         try:
-            return await asyncio.wait_for(self._client.get_tracks(identifier), timeout=self._cfg.load_timeout)
-        except (asyncio.TimeoutError, TimeoutError):
-            raise LoadFailed("The audio server took too long to respond.") from None
-        except ClientError:
-            raise NodeOffline() from None
-        except (aiohttp.ClientError, OSError):
-            raise NodeOffline() from None
-        except RequestError as exc:
-            log.warning("Lavalink request error while loading: %s", exc)
-            raise LoadFailed() from None
-        except Exception:
-            log.exception("Unexpected error while loading tracks")
-            raise LoadFailed() from None
+            try:
+                await asyncio.wait_for(self._semaphore.acquire(), timeout=3.0)
+            except (asyncio.TimeoutError, TimeoutError):
+                from utils.errors import ServerBusy
+
+                raise ServerBusy() from None
+            try:
+                result = await asyncio.wait_for(self._client.get_tracks(identifier), timeout=self._cfg.load_timeout)
+                # Check for load failure or empty tracks to cache negatively
+                if result.load_type == LoadType.ERROR:
+                    exc = LoadFailed()
+                    self._negative_cache.set(identifier, exc)
+                    if not flight_fut.done():
+                        flight_fut.set_exception(exc)
+                    raise exc
+                if result.load_type == LoadType.EMPTY or not result.tracks:
+                    exc = NoMatches()
+                    self._negative_cache.set(identifier, exc)
+                    if not flight_fut.done():
+                        flight_fut.set_exception(exc)
+                    raise exc
+
+                # Cache positive result
+                self._cache.set(identifier, result)
+                if not flight_fut.done():
+                    flight_fut.set_result(result)
+                return result
+            except (asyncio.TimeoutError, TimeoutError):
+                exc = LoadFailed("The audio server took too long to respond.")
+                self._negative_cache.set(identifier, exc)
+                if not flight_fut.done():
+                    flight_fut.set_exception(exc)
+                raise exc from None
+            except ClientError:
+                exc = NodeOffline()
+                if not flight_fut.done():
+                    flight_fut.set_exception(exc)
+                raise exc from None
+            except (aiohttp.ClientError, OSError):
+                exc = NodeOffline()
+                if not flight_fut.done():
+                    flight_fut.set_exception(exc)
+                raise exc from None
+            except RequestError as req_exc:
+                log.warning("Lavalink request error while loading: %s", req_exc)
+                exc = LoadFailed()
+                self._negative_cache.set(identifier, exc)
+                if not flight_fut.done():
+                    flight_fut.set_exception(exc)
+                raise exc from None
+            except (NoMatches, LoadFailed, NodeOffline):
+                raise
+            except Exception:
+                log.exception("Unexpected error while loading tracks")
+                exc = LoadFailed()
+                if not flight_fut.done():
+                    flight_fut.set_exception(exc)
+                raise exc from None
+            finally:
+                self._semaphore.release()
+        except Exception as e:
+            if not flight_fut.done():
+                flight_fut.set_exception(e)
+            raise
         finally:
-            self._semaphore.release()
+            self._flight.pop(identifier, None)
 
     def _to_outcome(self, result: LoadResult, source: str, used_fallback: bool, query: str | None) -> LoadOutcome:
         load_type = result.load_type

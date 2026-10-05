@@ -134,8 +134,13 @@ class Library(commands.Cog):
                 f"{start + i + 1}. **{messages.escape_subject(t.title)}** • `{format_duration(t.duration_ms)}`"
                 for i, t in enumerate(tracks[start : start + 10])
             ]
+            title = (
+                f"**Your Favorites** ({total}/{self.bot.cfg.max_favorites_per_user})"
+                if self.bot.cfg.max_favorites_per_user > 0
+                else f"**Your Favorites** ({total})"
+            )
             return PaginatedPage(
-                title=f"**Your Favorites** ({total}/{self.bot.cfg.max_favorites_per_user})",
+                title=title,
                 items=items,
                 current_page=page,
                 total_pages=pages,
@@ -165,7 +170,7 @@ class Library(commands.Cog):
 
         try:
             existing = await self.bot.storage.get_favorites(interaction.user.id)
-            if len(existing) >= self.bot.cfg.max_favorites_per_user:
+            if self.bot.cfg.max_favorites_per_user > 0 and len(existing) >= self.bot.cfg.max_favorites_per_user:
                 raise BotUserError(messages.favorites_limit(self.bot.cfg.max_favorites_per_user))
 
             stored = StoredTrack(
@@ -302,7 +307,7 @@ class Library(commands.Cog):
         clean_name = name.strip()
         try:
             existing = await self.bot.storage.list_playlists(interaction.user.id)
-            if len(existing) >= self.bot.cfg.max_playlists_per_user:
+            if self.bot.cfg.max_playlists_per_user > 0 and len(existing) >= self.bot.cfg.max_playlists_per_user:
                 raise BotUserError(messages.playlist_limit(self.bot.cfg.max_playlists_per_user))
 
             await self.bot.storage.create_playlist(
@@ -392,8 +397,13 @@ class Library(commands.Cog):
             page = max(1, min(page_num, pages))
             start = (page - 1) * 10
             items = [f"{start + i + 1}. **{messages.escape_subject(n)}**" for i, n in enumerate(names[start : start + 10])]
+            title = (
+                f"**Your Playlists** ({total}/{self.bot.cfg.max_playlists_per_user})"
+                if self.bot.cfg.max_playlists_per_user > 0
+                else f"**Your Playlists** ({total})"
+            )
             return PaginatedPage(
-                title=f"**Your Playlists** ({total}/{self.bot.cfg.max_playlists_per_user})",
+                title=title,
                 items=items,
                 current_page=page,
                 total_pages=pages,
@@ -476,7 +486,7 @@ class Library(commands.Cog):
 
         try:
             existing = await self.bot.storage.get_playlist_tracks(interaction.user.id, clean_name)
-            if len(existing) >= self.bot.cfg.max_tracks_per_playlist:
+            if self.bot.cfg.max_tracks_per_playlist > 0 and len(existing) >= self.bot.cfg.max_tracks_per_playlist:
                 raise BotUserError(messages.playlist_tracks_limit(self.bot.cfg.max_tracks_per_playlist))
 
             if query is None:

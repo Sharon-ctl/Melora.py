@@ -30,6 +30,7 @@ log = logging.getLogger(__name__)
 AUDIO_TIMEOUT = 10.0
 OVERDUE_GRACE_SECONDS = 180.0
 ExpireCallback = Callable[[int, str], Awaitable[None]]
+_GLOBAL_PREFETCH_SEMAPHORE = asyncio.Semaphore(16)
 
 
 @dataclass(frozen=True)
@@ -95,6 +96,14 @@ class GuildPlayer:
         self._card_lock = asyncio.Lock()
         self._last_card_edit: float = 0.0
         self._card_coalesce_task: asyncio.Task[Any] | None = None
+        self._prefetch_task: asyncio.Task[Any] | None = None
+
+    def cancel_prefetch(self) -> None:
+        """Cancel any running background prefetch task."""
+        if self._prefetch_task is not None:
+            if not self._prefetch_task.done():
+                self._prefetch_task.cancel()
+            self._prefetch_task = None
 
     # ------------------------------------------------------------------ helpers
 
@@ -140,8 +149,12 @@ class GuildPlayer:
     # --------------------------------------------------------------- card lifecycle
 
     def schedule_card_update(self) -> None:
-        """Schedule a coalesced card update (~1s debounce)."""
+        """Schedule a coalesced card update (latest-wins via central flusher)."""
         if self.destroyed or self.nowplaying_channel_id is None:
+            return
+        flusher = getattr(self.services, "flusher", None)
+        if flusher is not None:
+            flusher.schedule(self.guild_id, self)
             return
         if self._card_coalesce_task is not None and not self._card_coalesce_task.done():
             return  # already pending
@@ -218,6 +231,9 @@ class GuildPlayer:
 
     async def delete_card(self) -> None:
         """Delete the now playing card message. Safe to call any time."""
+        flusher = getattr(self.services, "flusher", None)
+        if flusher is not None:
+            flusher.cancel(self.guild_id)
         if self._card_coalesce_task is not None and not self._card_coalesce_task.done():
             self._card_coalesce_task.cancel()
             self._card_coalesce_task = None
@@ -242,16 +258,17 @@ class GuildPlayer:
         await self._update_card_locked(recreate=True)
 
     def schedule_snapshot(self) -> None:
-        """Debounce writing a queue snapshot to storage (5s delay)."""
+        """Debounce writing a queue snapshot to storage (delay grows with queue size)."""
         if not self.restore_queue_enabled:
             return
         self.cancel_timer("snapshot")
-        task = self.tasks.spawn(self._debounced_snapshot(), name="timer-snapshot")
+        delay = min(30.0, 5.0 + (len(self.queue) / 5000.0))
+        task = self.tasks.spawn(self._debounced_snapshot(delay), name="timer-snapshot")
         if task is not None:
             self._timers["snapshot"] = task
 
-    async def _debounced_snapshot(self) -> None:
-        await asyncio.sleep(5.0)
+    async def _debounced_snapshot(self, delay: float = 5.0) -> None:
+        await asyncio.sleep(delay)
         self._timers.pop("snapshot", None)
         storage = getattr(self.services, "storage", None)
         if self.destroyed or storage is None:
@@ -285,6 +302,9 @@ class GuildPlayer:
     # ------------------------------------------------------------------- timers
 
     def has_timer(self, name: str) -> bool:
+        scheduler = getattr(self.services, "scheduler", None)
+        if scheduler is not None:
+            return scheduler.has_timer(self.guild_id, name)
         task = self._timers.get(name)
         return task is not None and not task.done()
 
@@ -292,14 +312,28 @@ class GuildPlayer:
         self.cancel_timer(name)
         if self.destroyed or (self.is_247 and reason in ("idle", "alone")):
             return
+        scheduler = getattr(self.services, "scheduler", None)
+        if scheduler is not None:
+            scheduler.schedule(self.guild_id, name, delay, reason)
+            return
         task = self.tasks.spawn(self._timer_body(name, delay, reason), name=f"timer-{name}")
         if task is not None:
             self._timers[name] = task
 
     def cancel_timer(self, name: str) -> None:
+        scheduler = getattr(self.services, "scheduler", None)
+        if scheduler is not None:
+            scheduler.cancel(self.guild_id, name)
         task = self._timers.pop(name, None)
         if task is not None and not task.done() and task is not _current_task():
             task.cancel()
+
+    def cancel_all_timers(self) -> None:
+        scheduler = getattr(self.services, "scheduler", None)
+        if scheduler is not None:
+            scheduler.cancel_guild(self.guild_id)
+        for name in list(self._timers):
+            self.cancel_timer(name)
 
     async def _timer_body(self, name: str, delay: float, reason: str) -> None:
         await asyncio.sleep(delay)
@@ -484,46 +518,59 @@ class GuildPlayer:
                 log.debug("guild=%s audio preprocessing filter failed: %s", self.guild_id, exc)
 
     def _schedule_preload_next(self) -> None:
-        """Spawn background task to pre-resolve the next queued item for fast transitions."""
+        """Spawn background task to pre-resolve the next 2 queued items for instant transitions."""
+        self.cancel_prefetch()
         if self.destroyed or len(self.queue) == 0:
             return
         task = self.tasks.spawn(self._preload_next(), name="preload-next")
-        if task is None:
+        if task is not None:
+            self._prefetch_task = task
+        else:
             log.debug("guild=%s could not spawn preload-next", self.guild_id)
 
-    async def _preload_next(self) -> None:
-        """Pre-fetch and resolve upcoming track in the background for zero-latency transitions."""
-        if self.destroyed or len(self.queue) == 0:
+    async def _resolve_one_item(self, item: QueueItem) -> None:
+        if item.track is not None or self.destroyed:
             return
-        next_item: QueueItem | None = None
-        for item in self.queue:
-            if item.track is None:
-                next_item = item
-                break
-        if next_item is None or next_item.track is not None:
-            return
-
         try:
-            if next_item.spotify_metadata:
-                meta = next_item.spotify_metadata
-                target_artists = meta.get("artists") or ([next_item.artist] if next_item.artist else [])
+            if item.spotify_metadata:
+                meta = item.spotify_metadata
+                target_artists = meta.get("artists") or ([item.artist] if item.artist else [])
                 resolved = await self.spotify_resolver.resolve(
-                    target_title=meta.get("title", next_item.title),
+                    target_title=meta.get("title", item.title),
                     target_artists=target_artists,
-                    target_duration_ms=meta.get("duration_ms", next_item.duration_ms),
-                    spotify_uri=meta.get("uri", next_item.uri),
+                    target_duration_ms=meta.get("duration_ms", item.duration_ms),
+                    spotify_uri=meta.get("uri", item.uri),
                     loader=self.services.loader,
                     guild_id=self.guild_id,
                 )
-                if resolved is not None and next_item.track is None:
-                    next_item.replace_track(resolved)
-            elif next_item.uri or next_item.query:
-                load_target = next_item.uri or next_item.query or ""
+                if resolved is not None and item.track is None:
+                    item.replace_track(resolved)
+            elif item.uri or item.query:
+                load_target = item.uri or item.query or ""
                 outcome = await self.services.loader.load(self.guild_id, load_target)
-                if outcome.tracks and next_item.track is None:
-                    next_item.replace_track(outcome.tracks[0])
+                if outcome.tracks and item.track is None:
+                    item.replace_track(outcome.tracks[0])
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             log.debug("guild=%s preload next track failed: %s", self.guild_id, exc)
+
+    async def _preload_next(self) -> None:
+        """Pre-fetch and resolve up to 2 upcoming tracks in background using asyncio.gather."""
+        if self.destroyed or len(self.queue) == 0:
+            return
+        unresolved: list[QueueItem] = []
+        for item in self.queue:
+            if item.track is None:
+                unresolved.append(item)
+                if len(unresolved) >= 2:
+                    break
+        if not unresolved:
+            return
+
+        async with _GLOBAL_PREFETCH_SEMAPHORE:
+            tasks = [self._resolve_one_item(item) for item in unresolved]
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _load_fallback(self, item: QueueItem) -> Any | None:
         try:
@@ -626,6 +673,7 @@ class GuildPlayer:
         async with self.lock:
             if self.destroyed:
                 raise BotUserError("The player was closed. Try again.")
+            self.cancel_prefetch()
             before = len(self.queue)
             result = self.queue.add_many(items)
             if result.added == 0:
@@ -647,6 +695,7 @@ class GuildPlayer:
             item = self.current
             if item is None:
                 raise NothingPlaying()
+            self.cancel_prefetch()
             self._end_handled = True
             await self._advance_locked(skipped=True)
             return item
@@ -699,6 +748,7 @@ class GuildPlayer:
 
     async def clear(self) -> int:
         async with self.lock:
+            self.cancel_prefetch()
             count = self.queue.clear()
             self.schedule_snapshot()
             return count
@@ -707,7 +757,9 @@ class GuildPlayer:
         async with self.lock:
             if len(self.queue) < 2:
                 raise BotUserError("There are not enough tracks to shuffle.")
+            self.cancel_prefetch()
             self.queue.shuffle()
+            self._schedule_preload_next()
             self.schedule_snapshot()
 
     async def insert(self, item: QueueItem, position: int = 1) -> int:
@@ -866,9 +918,12 @@ class GuildPlayer:
         async with self.lock:
             if self.current is None:
                 raise NothingPlaying()
+            if len(self.votes) == 0:
+                self.start_timer("vote_expiry", 60.0, "vote_expiry")
             self.votes.add(user_id)
             needed = max(1, (humans_count // 2) + 1)
             if len(self.votes) >= needed:
+                self.cancel_timer("vote_expiry")
                 self.votes.clear()
                 self._end_handled = True
                 await self._advance_locked(skipped=True)
@@ -984,6 +1039,11 @@ class GuildPlayer:
     def shutdown(self) -> None:
         """Cancel every timer and task, drop the queue, and release callbacks."""
         self.destroyed = True
+        self.cancel_prefetch()
+        self.cancel_all_timers()
+        flusher = getattr(self.services, "flusher", None)
+        if flusher is not None:
+            flusher.cancel(self.guild_id)
         # Stop the now playing view so it is unregistered from discord.py
         if self.nowplaying_view is not None:
             try:

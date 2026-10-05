@@ -184,7 +184,7 @@ class Music(commands.Cog):
                 track = await self.bot.spotify.get_track(spotify_id)
                 if track is None:
                     raise NoMatches(messages.spotify_track_not_found())
-                if track.duration_ms and track.duration_ms // 1000 > cfg.max_track_seconds:
+                if cfg.max_track_seconds > 0 and track.duration_ms and track.duration_ms // 1000 > cfg.max_track_seconds:
                     raise TrackTooLong()
                 return [QueueItem.from_spotify(track, user_id, requester_avatar_url=requester_avatar_url)], 0, None, None
 
@@ -192,11 +192,11 @@ class Music(commands.Cog):
                 album = await self.bot.spotify.get_album(spotify_id)
                 if album is None or not album.tracks:
                     raise NoMatches(messages.spotify_album_not_found())
-                chosen = album.tracks[: cfg.max_playlist_tracks]
+                chosen = album.tracks[: cfg.max_playlist_tracks] if cfg.max_playlist_tracks > 0 else album.tracks
                 skipped = album.total_tracks - len(chosen)
                 items: list[QueueItem] = []
                 for t in chosen:
-                    if t.duration_ms and t.duration_ms // 1000 > cfg.max_track_seconds:
+                    if cfg.max_track_seconds > 0 and t.duration_ms and t.duration_ms // 1000 > cfg.max_track_seconds:
                         skipped += 1
                         continue
                     items.append(QueueItem.from_spotify(t, user_id, requester_avatar_url=requester_avatar_url))
@@ -208,11 +208,11 @@ class Music(commands.Cog):
                 playlist = await self.bot.spotify.get_playlist(spotify_id)
                 if playlist is None or not playlist.tracks:
                     raise NoMatches(messages.spotify_playlist_not_found())
-                chosen = playlist.tracks[: cfg.max_playlist_tracks]
+                chosen = playlist.tracks[: cfg.max_playlist_tracks] if cfg.max_playlist_tracks > 0 else playlist.tracks
                 skipped = playlist.total_tracks - len(chosen)
                 items = []
                 for t in chosen:
-                    if t.duration_ms and t.duration_ms // 1000 > cfg.max_track_seconds:
+                    if cfg.max_track_seconds > 0 and t.duration_ms and t.duration_ms // 1000 > cfg.max_track_seconds:
                         skipped += 1
                         continue
                     items.append(QueueItem.from_spotify(t, user_id, requester_avatar_url=requester_avatar_url))
@@ -242,7 +242,7 @@ class Music(commands.Cog):
                 requester_avatar_url=requester_avatar_url,
             )
             return [item], 0
-        chosen = outcome.tracks[: cfg.max_playlist_tracks]
+        chosen = outcome.tracks[: cfg.max_playlist_tracks] if cfg.max_playlist_tracks > 0 else outcome.tracks
         skipped = len(outcome.tracks) - len(chosen)
         items: list[QueueItem] = []
         for track in chosen:
@@ -297,18 +297,58 @@ class Music(commands.Cog):
         player = await self.bot.registry.get_or_create(guild_id, channel.id, interaction.channel_id or 0)
         if player.voice_channel_id != channel.id:
             raise WrongChannel()
-        result = await player.enqueue(items)
-        if not result.started and player.current is None and len(player.queue) == 0:
-            raise LoadFailed(messages.playback_start_failed())
+        total_skipped = skipped
+        if coll_name is not None and len(items) > 200:
+            CHUNK_SIZE = 200
+            first_chunk = items[:CHUNK_SIZE]
+            res0 = await player.enqueue(first_chunk)
+            total_added = res0.added
+            total_skipped += res0.skipped
+            total_reported = coll_total or (len(items) + skipped)
 
-        total_skipped = skipped + result.skipped
-        if coll_name is not None:
-            total_reported = coll_total or (result.added + total_skipped)
-            text = messages.collection_tracks_added(truncate(coll_name, 50), result.added, total_reported, total_skipped)
+            # Immediately acknowledge to Discord with initial count
+            initial_text = messages.collection_tracks_added(
+                truncate(coll_name, 50), total_added, total_reported, total_skipped
+            )
+            await reply(interaction, initial_text)
+
+            # Stream remaining chunks in the background
+            async def _stream_remaining_chunks() -> None:
+                nonlocal total_added, total_skipped
+                for idx in range(CHUNK_SIZE, len(items), CHUNK_SIZE):
+                    if player.destroyed:
+                        log.info("guild=%s player destroyed mid-import of %s", guild_id, coll_name)
+                        break
+                    chunk = items[idx : idx + CHUNK_SIZE]
+                    sub_res = await player.enqueue(chunk)
+                    total_added += sub_res.added
+                    total_skipped += sub_res.skipped
+                    await asyncio.sleep(0)
+
+                if total_added > res0.added:
+                    final_text = messages.collection_tracks_added(
+                        truncate(coll_name, 50), total_added, total_reported, total_skipped
+                    )
+                    try:
+                        await interaction.edit_original_response(content=final_text)
+                    except Exception as exc:
+                        log.debug("guild=%s failed editing final import response: %s", guild_id, exc)
+
+            player.tasks.spawn(_stream_remaining_chunks(), name=f"stream-import-{guild_id}")
         else:
-            dur_str = format_duration(items[0].duration_ms) if items and items[0].duration_ms else None
-            text = messages.single_track_added(items[0].title, result.position, duration_str=dur_str)
-        await reply(interaction, text)
+            result = await player.enqueue(items)
+            if not result.started and player.current is None and len(player.queue) == 0:
+                raise LoadFailed(messages.playback_start_failed())
+            total_skipped += result.skipped
+            if coll_name is not None:
+                total_reported = coll_total or (result.added + total_skipped)
+                text = messages.collection_tracks_added(
+                    truncate(coll_name, 50), result.added, total_reported, total_skipped
+                )
+            else:
+                dur_str = format_duration(items[0].duration_ms) if items and items[0].duration_ms else None
+                text = messages.single_track_added(items[0].title, result.position, duration_str=dur_str)
+            await reply(interaction, text)
 
     @app_commands.command(name="insert", description="Insert a song at a given position in the queue")
     @app_commands.describe(query="A link or search text", position="1-based position in queue (default 1)")
@@ -370,6 +410,9 @@ class Music(commands.Cog):
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
         try:
+            reg = getattr(self.bot, "registry", None)
+            if getattr(self.bot, "is_load_shedding", False) or getattr(reg, "is_load_shedding", False):
+                return []
             if not interaction.guild or not interaction.guild_id:
                 return []
             if not getattr(self.bot.cfg, "autocomplete_search_enabled", True):
@@ -413,6 +456,32 @@ class Music(commands.Cog):
             if player is None or len(player.queue) == 0:
                 return []
             typed = str(current).strip().lower()
+            if typed.isdigit():
+                pos = int(typed)
+                target_positions: list[int] = []
+                queue_len = len(player.queue)
+                if 1 <= pos <= queue_len:
+                    target_positions.append(pos)
+                base = pos * 10
+                while len(target_positions) < 25 and base <= queue_len:
+                    for p in range(base, min(base + 10, queue_len + 1)):
+                        target_positions.append(p)
+                        if len(target_positions) >= 25:
+                            break
+                    base *= 10
+
+                choices: list[app_commands.Choice[int]] = []
+                for p in target_positions:
+                    item = player.queue[p - 1]
+                    dur = format_duration(item.duration_ms) if item.duration_ms else "0:00"
+                    if item.artist:
+                        label = f"{p}. {item.title} - {item.artist} ({dur})"
+                    else:
+                        label = f"{p}. {item.title} ({dur})"
+                    label = clean(label)[:100]
+                    choices.append(app_commands.Choice(name=label, value=p))
+                return choices
+
             matches: list[app_commands.Choice[int]] = []
             for idx, item in enumerate(player.queue, start=1):
                 idx_str = str(idx)
