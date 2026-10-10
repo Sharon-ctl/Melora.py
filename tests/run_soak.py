@@ -17,11 +17,15 @@ import sys
 import tracemalloc
 from dataclasses import dataclass, field
 
+from types import SimpleNamespace
+from typing import Any
+
 from cogs.admin import HelpView
 from core.contracts import PlayerServices
 from core.queue import LoopMode, QueueItem
 from core.registry import PlayerRegistry
 from core.stats import rss_mb
+from core.voice_status import VoiceStatusManager, derive_desired_status
 from tests.fakes import FakeBackend, FakeLoader, make_config, make_track
 from utils.cache import TTLCache
 from utils.components_v2 import ACTIVE_VIEWS, PaginatedPage, PaginatedView
@@ -32,6 +36,46 @@ from utils.timing import clear_timing_buffers, reset_http_429_count
 log = logging.getLogger(__name__)
 
 TRACE_LIMIT_KB = 1024.0
+
+
+class FakeVoiceChannel:
+    def __init__(self, channel_id: int) -> None:
+        self.id = channel_id
+        self.current_status: str | None = None
+        self.has_perms = True
+
+    async def edit(self, *, status: str | None = None, **kwargs: Any) -> None:
+        self.current_status = status
+
+    def permissions_for(self, member: Any) -> Any:
+        return SimpleNamespace(
+            set_voice_channel_status=self.has_perms,
+            connect=self.has_perms,
+        )
+
+
+class FakeGuild:
+    def __init__(self, guild_id: int) -> None:
+        self.id = guild_id
+        self.me = SimpleNamespace(id=999, name="Melora")
+        self.channels: dict[int, FakeVoiceChannel] = {}
+
+    def get_channel(self, channel_id: int) -> FakeVoiceChannel | None:
+        if channel_id not in self.channels:
+            self.channels[channel_id] = FakeVoiceChannel(channel_id)
+        return self.channels[channel_id]
+
+
+class FakeBot:
+    def __init__(self) -> None:
+        self.guilds: dict[int, FakeGuild] = {}
+        self.registry: Any = None
+        self.user = SimpleNamespace(id=999, name="Melora")
+
+    def get_guild(self, guild_id: int) -> FakeGuild | None:
+        if guild_id not in self.guilds:
+            self.guilds[guild_id] = FakeGuild(guild_id)
+        return self.guilds[guild_id]
 
 
 @dataclass
@@ -46,6 +90,8 @@ class SoakReport:
     leftover_cards: int = 0
     leftover_views: int = 0
     leftover_limiter_keys: int = 0
+    leftover_voice_statuses: int = 0
+    leftover_channel_statuses: int = 0
     problems: list[str] = field(default_factory=list)
 
     @property
@@ -79,7 +125,10 @@ async def run_soak(cycles: int = 500, guilds: int = 25, rss_limit_mb: float | No
     cfg = make_config()
     backend = FakeBackend()
     loader = FakeLoader()
-    registry = PlayerRegistry(PlayerServices(cfg, backend, loader))
+    fake_bot = FakeBot()
+    voice_status = VoiceStatusManager(fake_bot, cfg)
+    registry = PlayerRegistry(PlayerServices(cfg, backend, loader, voice_status=voice_status))
+    fake_bot.registry = registry
     autocomplete_cache: TTLCache[str, list[str]] = TTLCache(max_size=50, ttl=60.0)
 
     async def one_cycle(i: int) -> None:
@@ -117,6 +166,23 @@ async def run_soak(cycles: int = 500, guilds: int = 25, rss_limit_mb: float | No
             await player.resume()
         if i % 7 == 0:
             await player.move_card(3000 + guild_id)
+            await asyncio.sleep(0)
+
+        # Exercise voice channel moves and settings toggling
+        if i % 6 == 0:
+            await voice_status.on_channel_moved(guild_id, 1000 + guild_id, 4000 + guild_id)
+            await asyncio.sleep(0)
+
+        if i % 8 == 0:
+            await voice_status.on_setting_disabled(guild_id)
+            await asyncio.sleep(0)
+            await voice_status.on_setting_enabled(guild_id)
+            await asyncio.sleep(0)
+
+        # Periodically exercise direct status application on channel
+        if i % 10 == 0:
+            desired_st = derive_desired_status(player)
+            await voice_status._apply_channel_status(guild_id, 1000 + guild_id, desired_st)
             await asyncio.sleep(0)
 
         # Exercise Rate Limiter
@@ -187,9 +253,16 @@ async def run_soak(cycles: int = 500, guilds: int = 25, rss_limit_mb: float | No
 
         await asyncio.sleep(0)
 
+    voice_status.start()
     for i in range(30):  # warm up caches and one-time allocations
         await one_cycle(i)
     await registry.destroy_all("warmup")
+    await voice_status.clear_all_shutdown()
+    if voice_status._task is not None:
+        try:
+            await voice_status._task
+        except asyncio.CancelledError:
+            log.debug("voice_status task cancelled during shutdown")
     await asyncio.sleep(0.05)
     gc.collect()
 
@@ -200,6 +273,7 @@ async def run_soak(cycles: int = 500, guilds: int = 25, rss_limit_mb: float | No
         tracemalloc.start()
     baseline_traced = tracemalloc.get_traced_memory()[0]
 
+    voice_status.start()
     for i in range(cycles):
         await one_cycle(i)
 
@@ -212,6 +286,12 @@ async def run_soak(cycles: int = 500, guilds: int = 25, rss_limit_mb: float | No
     limiter.prune_idle(max_idle_seconds=0.0)
     clear_timing_buffers()
     reset_http_429_count()
+    await voice_status.clear_all_shutdown()
+    if voice_status._task is not None:
+        try:
+            await voice_status._task
+        except asyncio.CancelledError:
+            log.debug("voice_status task cancelled during shutdown")
     await asyncio.sleep(0.1)
     gc.collect()
 
@@ -225,6 +305,15 @@ async def run_soak(cycles: int = 500, guilds: int = 25, rss_limit_mb: float | No
     report.leftover_cards = len(backend.active_cards)
     report.leftover_views = len(ACTIVE_VIEWS._views)
     report.leftover_limiter_keys = len(limiter._windows)
+    report.leftover_voice_statuses = (
+        len(voice_status._desired)
+        + len(voice_status._current_applied)
+        + len(voice_status._desired_channel)
+        + len(voice_status._skipped_channels)
+    )
+    report.leftover_channel_statuses = sum(
+        1 for g in fake_bot.guilds.values() for ch in g.channels.values() if ch.current_status is not None
+    )
     if started_tracing:
         tracemalloc.stop()
 
@@ -242,6 +331,10 @@ async def run_soak(cycles: int = 500, guilds: int = 25, rss_limit_mb: float | No
         report.problems.append(f"leftover active views: {report.leftover_views}")
     if report.leftover_limiter_keys != 0:
         report.problems.append(f"leftover limiter keys: {report.leftover_limiter_keys}")
+    if report.leftover_voice_statuses != 0:
+        report.problems.append(f"leftover voice status entries: {report.leftover_voice_statuses}")
+    if report.leftover_channel_statuses != 0:
+        report.problems.append(f"leftover active channel statuses: {report.leftover_channel_statuses}")
     if report.traced_kb > TRACE_LIMIT_KB:
         report.problems.append(f"traced memory grew by {report.traced_kb:.0f} KB")
     if rss_limit_mb is not None and report.rss_delta_mb > rss_limit_mb:
@@ -261,8 +354,10 @@ def main() -> int:
     print(f"registry size   : {report.registry_size}")
     print(f"task delta      : {report.task_delta}")
     print(f"traced memory   : {report.traced_kb:.1f} KB growth")
-    print(f"rss             : {report.rss_delta_mb:.1f} MB growth")
-    print(f"leftover state  : audio={report.leftover_audio} voice={report.leftover_voice} cards={report.leftover_cards}")
+    print(
+        f"leftover state  : audio={report.leftover_audio} voice={report.leftover_voice} "
+        f"cards={report.leftover_cards} voice_status={report.leftover_voice_statuses}"
+    )
     if report.ok:
         print("RESULT: PASS")
         return 0

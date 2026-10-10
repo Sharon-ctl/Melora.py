@@ -65,6 +65,11 @@ def setup_logging(config: Config) -> None:
             sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
         except Exception as exc:
             logging.getLogger().debug("stderr reconfigure skipped: %s", exc)
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+        except Exception as exc:
+            logging.getLogger().debug("stdout reconfigure skipped: %s", exc)
 
     console = logging.StreamHandler(sys.stderr)
     console.setFormatter(formatter)

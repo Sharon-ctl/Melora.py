@@ -156,6 +156,8 @@ DEFAULT_EMOJI_LABELS: dict[str, str] = {
     "skip": "Skip",
     "loop": "Loop",
     "stop": "Stop",
+    "music": "",
+    "addmusic": "",
 }
 
 _EMOJI_CACHE: dict[str, discord.PartialEmoji | None] | None = None
@@ -210,5 +212,18 @@ def load_emojis(path: Path | None = None, force_reload: bool = False) -> dict[st
     if path is None and not force_reload:
         _EMOJI_CACHE = emojis
     return emojis
+
+
+def get_emoji_markup(key: str, path: Path | None = None) -> str:
+    """Render custom emoji markup `<:name:id>` from the emoji loader.
+
+    Falls back to an empty string (no markup) if the entry is missing or invalid.
+    """
+    emojis = load_emojis(path)
+    emoji = emojis.get(key)
+    if emoji is not None and getattr(emoji, "id", None) and getattr(emoji, "name", None):
+        return f"<:{emoji.name}:{emoji.id}>"
+    return ""
+
 
 

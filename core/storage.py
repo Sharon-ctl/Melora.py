@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from utils.autocomplete import UserHistoryEntry
 from utils.cache import TTLCache
 
 log = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ class GuildSettings:
     restore_queue: bool = False
     autoplay: bool = False
     default_volume: int = 100
+    voice_status_enabled: bool = True
 
 
 SCHEMA_MIGRATIONS = [
@@ -117,7 +119,26 @@ SCHEMA_MIGRATIONS = [
         tracks_json TEXT NOT NULL,
         updated_at REAL NOT NULL
     );
+    """,
+    # Migration 2: Add voice_status_enabled to guild_settings
     """
+    ALTER TABLE guild_settings ADD COLUMN voice_status_enabled INTEGER NOT NULL DEFAULT 1;
+    """,
+    # Migration 3: Add user_play_history table and index
+    """
+    CREATE TABLE IF NOT EXISTS user_play_history (
+        user_id INTEGER NOT NULL,
+        key TEXT NOT NULL,
+        title TEXT NOT NULL,
+        artist TEXT NOT NULL DEFAULT '',
+        uri TEXT NOT NULL DEFAULT '',
+        played_at REAL NOT NULL,
+        PRIMARY KEY (user_id, key)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_user_play_history_played_at
+    ON user_play_history (user_id, played_at DESC);
+    """,
 ]
 
 
@@ -132,6 +153,7 @@ class Storage:
         self._init_event = threading.Event()
         self._init_error: Exception | None = None
         self._settings_cache: TTLCache[int, GuildSettings] = TTLCache(max_size=2000, ttl=300.0)
+        self._history_cache: TTLCache[int, list[UserHistoryEntry]] = TTLCache(max_size=2000, ttl=600.0)
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -273,9 +295,17 @@ class Storage:
             raise StorageUnavailable("Storage is closed or unavailable.")
         loop = asyncio.get_running_loop()
         future: asyncio.Future[Any] = loop.create_future()
+
+        def _consume_storage_future(f: asyncio.Future[Any]) -> None:
+            if not f.cancelled():
+                f.exception()
+
+        future.add_done_callback(_consume_storage_future)
         self._queue.put(_StorageOp(func, future, loop, is_write=is_write, coalesce_key=coalesce_key))
         try:
             return await future
+        except (asyncio.CancelledError, GeneratorExit):
+            raise
         except StorageError:
             raise
         except Exception as exc:
@@ -335,7 +365,8 @@ class Storage:
             cur.execute(
                 """
                 SELECT guild_id, voice_247_channel_id, dj_role_id, dj_only, volume_limit,
-                       max_duration, max_queue, restrict_channel_id, restore_queue, autoplay, default_volume
+                       max_duration, max_queue, restrict_channel_id, restore_queue, autoplay, default_volume,
+                       voice_status_enabled
                 FROM guild_settings WHERE guild_id = ?
                 """,
                 (guild_id,),
@@ -355,6 +386,7 @@ class Storage:
                 restore_queue=bool(row[8]),
                 autoplay=bool(row[9]),
                 default_volume=row[10],
+                voice_status_enabled=bool(row[11]) if len(row) > 11 else True,
             )
 
         settings = await self._run(_get)
@@ -373,6 +405,7 @@ class Storage:
             "restore_queue",
             "autoplay",
             "default_volume",
+            "voice_status_enabled",
         }
         for k in fields:
             if k not in allowed:
@@ -409,7 +442,8 @@ class Storage:
         cur.execute(
             """
             SELECT guild_id, voice_247_channel_id, dj_role_id, dj_only, volume_limit,
-                   max_duration, max_queue, restrict_channel_id, restore_queue, autoplay, default_volume
+                   max_duration, max_queue, restrict_channel_id, restore_queue, autoplay, default_volume,
+                   voice_status_enabled
             FROM guild_settings WHERE guild_id = ?
             """,
             (guild_id,),
@@ -429,6 +463,7 @@ class Storage:
             restore_queue=bool(row[8]),
             autoplay=bool(row[9]),
             default_volume=row[10],
+            voice_status_enabled=bool(row[11]) if len(row) > 11 else True,
         )
 
     async def delete_guild(self, guild_id: int) -> None:
@@ -719,13 +754,136 @@ class Storage:
                 (user_id,),
             )
             cur.execute("DELETE FROM playlists WHERE user_id = ?", (user_id,))
+            cur.execute("DELETE FROM user_play_history WHERE user_id = ?", (user_id,))
 
-        await self._run(_reset, is_write=True)
+        try:
+            await self._run(_reset, is_write=True)
+        finally:
+            self._history_cache.invalidate(user_id)
+
+    # ---------------------------------------------------- user play history
+    async def record_user_play_history(
+        self,
+        user_id: int,
+        title: str,
+        artist: str = "",
+        uri: str = "",
+        max_entries: int = 50,
+    ) -> None:
+        def _record(conn: sqlite3.Connection) -> None:
+            now = time.time()
+            clean_title = (title or "").strip()
+            clean_artist = (artist or "").strip()
+            clean_uri = (uri or "").strip()
+            k = clean_uri.lower() if clean_uri else f"{clean_title} {clean_artist}".strip().lower()
+            if not k:
+                return
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO user_play_history (user_id, key, title, artist, uri, played_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (user_id, key) DO UPDATE SET
+                    played_at = excluded.played_at,
+                    title = excluded.title,
+                    artist = excluded.artist,
+                    uri = excluded.uri;
+                """,
+                (user_id, k, clean_title, clean_artist, clean_uri, now),
+            )
+            limit_val = max(1, max_entries)
+            cur.execute(
+                """
+                DELETE FROM user_play_history
+                WHERE user_id = ?
+                  AND key NOT IN (
+                      SELECT key FROM user_play_history
+                      WHERE user_id = ?
+                      ORDER BY played_at DESC
+                      LIMIT ?
+                  );
+                """,
+                (user_id, user_id, limit_val),
+            )
+
+        try:
+            await self._run(_record, is_write=True)
+            await self._refresh_user_history_cache(user_id, max_entries=max_entries)
+        except Exception as exc:
+            log.debug("user=%s record_user_play_history error: %s", user_id, exc)
+
+    async def _refresh_user_history_cache(self, user_id: int, max_entries: int = 50) -> None:
+        try:
+            entries = await self.get_user_play_history(user_id, limit=max(max_entries, 50))
+            self._history_cache.set(user_id, entries)
+        except Exception as exc:
+            self._history_cache.invalidate(user_id)
+            log.debug("user=%s refresh history cache error: %s", user_id, exc)
+
+    async def get_user_play_history(self, user_id: int, limit: int = 25) -> list[UserHistoryEntry]:
+        def _get(conn: sqlite3.Connection) -> list[UserHistoryEntry]:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT title, artist, uri, played_at
+                FROM user_play_history
+                WHERE user_id = ?
+                ORDER BY played_at DESC
+                LIMIT ?;
+                """,
+                (user_id, limit),
+            )
+            rows = cur.fetchall()
+            return [
+                UserHistoryEntry(
+                    title=str(r[0]),
+                    artist=str(r[1] or ""),
+                    uri=str(r[2] or ""),
+                    played_at=float(r[3]),
+                )
+                for r in rows
+            ]
+
+        return await self._run(_get)
+
+    async def get_user_play_history_cached(self, user_id: int, limit: int = 25) -> list[UserHistoryEntry]:
+        cached = self._history_cache.get(user_id)
+        if cached is not None:
+            return cached[:limit]
+        try:
+            entries = await asyncio.wait_for(
+                self.get_user_play_history(user_id, limit=max(limit, 50)),
+                timeout=1.5,
+            )
+            self._history_cache.set(user_id, entries)
+            return entries[:limit]
+        except (asyncio.TimeoutError, TimeoutError):
+            log.debug("user=%s history cache miss timed out (>1.5s)", user_id)
+            return []
+        except Exception as exc:
+            log.debug("user=%s history cache miss error: %s", user_id, exc)
+            return []
+
+    async def delete_user_history(self, user_id: int) -> None:
+        def _del(conn: sqlite3.Connection) -> None:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM user_play_history WHERE user_id = ?", (user_id,))
+
+        try:
+            await self._run(_del, is_write=True)
+        finally:
+            self._history_cache.invalidate(user_id)
 
     # ---------------------------------------------------- json export
     async def export_all_json(self) -> dict[str, Any]:
         def _export(conn: sqlite3.Connection) -> dict[str, Any]:
-            export: dict[str, Any] = {"guild_settings": [], "favorites": [], "playlists": [], "queue_snapshots": []}
+            export: dict[str, Any] = {
+                "guild_settings": [],
+                "favorites": [],
+                "playlists": [],
+                "queue_snapshots": [],
+                "user_play_history": [],
+            }
 
             cur = conn.cursor()
             cur.execute("SELECT * FROM guild_settings")
@@ -756,6 +914,11 @@ class Storage:
             cols = [d[0] for d in cur.description]
             for row in cur.fetchall():
                 export["queue_snapshots"].append(dict(zip(cols, row)))
+
+            cur.execute("SELECT * FROM user_play_history")
+            cols = [d[0] for d in cur.description]
+            for row in cur.fetchall():
+                export["user_play_history"].append(dict(zip(cols, row)))
 
             return export
 

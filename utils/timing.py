@@ -46,21 +46,37 @@ def reset_http_429_count() -> None:
     _HTTP_429_COUNT = 0
 
 
+IO_BOUND_COMMAND_BUDGETS: dict[str, float] = {
+    "play": 6.0,
+    "search": 6.0,
+    "playnext": 6.0,
+    "insert": 6.0,
+    "playinstant": 6.0,
+    "similar": 6.0,
+}
+DEFAULT_HANDLER_BUDGET: float = 1.5
+ACK_LATENCY_BUDGET: float = 1.0
+
+
 def record_ack_latency(command: str, latency: float) -> None:
-    """Record interaction acknowledgement latency in seconds."""
+    """Record interaction acknowledgement latency in seconds, logging a warning if > 1.0s."""
     if not isinstance(latency, (int, float)):
         return
-    _ACK_LATENCY_BUFFERS[command].append(max(0.0, float(latency)))
+    val = max(0.0, float(latency))
+    _ACK_LATENCY_BUFFERS[command].append(val)
+    if val > ACK_LATENCY_BUDGET:
+        log.warning("Interaction ack latency for /%s took %.3fs (> %.1fs budget)", command, val, ACK_LATENCY_BUDGET)
 
 
 def record_handler_time(command: str, duration: float) -> None:
-    """Record total command execution time in seconds, logging a warning if > 1.5s."""
+    """Record total command execution time in seconds, logging a warning if exceeding budget."""
     if not isinstance(duration, (int, float)):
         return
     val = max(0.0, float(duration))
     _HANDLER_TIME_BUFFERS[command].append(val)
-    if val > 1.5:
-        log.warning("Command /%s execution took %.3fs (> 1.5s budget)", command, val)
+    budget = IO_BOUND_COMMAND_BUDGETS.get(command, DEFAULT_HANDLER_BUDGET)
+    if val > budget:
+        log.warning("Command /%s execution took %.3fs (> %.1fs budget)", command, val, budget)
 
 
 def calculate_percentiles(values: list[float]) -> tuple[float, float]:

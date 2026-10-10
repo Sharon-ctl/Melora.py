@@ -77,3 +77,4 @@ class PlayerServices:
     scheduler: Any | None = None
     flusher: Any | None = None
     loop_monitor: Any | None = None
+    voice_status: Any | None = None

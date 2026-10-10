@@ -39,6 +39,11 @@ from utils.errors import (
     WrongChannel,
 )
 from utils import messages
+from utils.autocomplete import (
+    format_history_choice_name,
+    format_history_choice_value,
+    format_search_choice_name,
+)
 from utils.interaction import reply, safe_defer
 from utils.text import clean, format_duration, parse_time_string, truncate
 
@@ -115,6 +120,7 @@ class SearchView(BaseCardView):
                     chosen_track, self.author_id or 0, requester_avatar_url=extract_user_avatar_url(interaction.user)
                 )
                 await player.enqueue([item])
+                cog._record_user_history(self.author_id or 0, [item])
                 await interaction.followup.send(messages.single_track_added(truncate(item.title)))
 
         return callback
@@ -281,20 +287,29 @@ class Music(commands.Cog):
     @app_commands.describe(query="A link or search text")
     @app_commands.guild_only()
     async def play(self, interaction: discord.Interaction, query: app_commands.Range[str, 1, 200]) -> None:
-        member, channel = await self._resolve_voice_channel(interaction)
         if not await safe_defer(interaction):
             return
 
+        member, channel = await self._resolve_voice_channel(interaction)
         guild_id = interaction.guild_id or 0
         avatar_url = extract_user_avatar_url(member)
-        items, skipped, coll_name, coll_total = await self._load_query_items(
-            query, member.id, guild_id, requester_avatar_url=avatar_url
-        )
+
+        had_player = self.bot.registry.get(guild_id) is not None
+        try:
+            (items, skipped, coll_name, coll_total), player = await asyncio.gather(
+                self._load_query_items(query, member.id, guild_id, requester_avatar_url=avatar_url),
+                self.bot.registry.get_or_create(guild_id, channel.id, interaction.channel_id or 0),
+            )
+        except Exception:
+            if not had_player:
+                p = self.bot.registry.get(guild_id)
+                if p is not None and p.current is None and len(p.queue) == 0:
+                    await self.bot.registry.destroy(guild_id, "load_failed")
+            raise
 
         voice = member.voice
         if voice is None or voice.channel is None or voice.channel.id != channel.id:
             raise NotInVoice()
-        player = await self.bot.registry.get_or_create(guild_id, channel.id, interaction.channel_id or 0)
         if player.voice_channel_id != channel.id:
             raise WrongChannel()
         total_skipped = skipped
@@ -313,6 +328,8 @@ class Music(commands.Cog):
             await reply(interaction, initial_text)
 
             # Stream remaining chunks in the background
+            self._record_user_history(member.id, items)
+
             async def _stream_remaining_chunks() -> None:
                 nonlocal total_added, total_skipped
                 for idx in range(CHUNK_SIZE, len(items), CHUNK_SIZE):
@@ -339,6 +356,7 @@ class Music(commands.Cog):
             result = await player.enqueue(items)
             if not result.started and player.current is None and len(player.queue) == 0:
                 raise LoadFailed(messages.playback_start_failed())
+            self._record_user_history(member.id, items)
             total_skipped += result.skipped
             if coll_name is not None:
                 total_reported = coll_total or (result.added + total_skipped)
@@ -359,15 +377,16 @@ class Music(commands.Cog):
         query: app_commands.Range[str, 1, 200],
         position: app_commands.Range[int, 1, 100000] = 1,
     ) -> None:
-        member, channel = await self._resolve_voice_channel(interaction)
         if not await safe_defer(interaction):
             return
 
+        member, channel = await self._resolve_voice_channel(interaction)
         guild_id = interaction.guild_id or 0
         avatar_url = extract_user_avatar_url(member)
         items, _, _, _ = await self._load_query_items(query, member.id, guild_id, requester_avatar_url=avatar_url)
         player = await self.bot.registry.get_or_create(guild_id, channel.id, interaction.channel_id or 0)
         pos = await player.insert(items[0], position)
+        self._record_user_history(member.id, [items[0]])
         if pos == 0:
             await reply(interaction, messages.now_playing(truncate(items[0].title)))
         else:
@@ -377,15 +396,16 @@ class Music(commands.Cog):
     @app_commands.describe(query="A link or search text")
     @app_commands.guild_only()
     async def playnext(self, interaction: discord.Interaction, query: app_commands.Range[str, 1, 200]) -> None:
-        member, channel = await self._resolve_voice_channel(interaction)
         if not await safe_defer(interaction):
             return
 
+        member, channel = await self._resolve_voice_channel(interaction)
         guild_id = interaction.guild_id or 0
         avatar_url = extract_user_avatar_url(member)
         items, _, _, _ = await self._load_query_items(query, member.id, guild_id, requester_avatar_url=avatar_url)
         player = await self.bot.registry.get_or_create(guild_id, channel.id, interaction.channel_id or 0)
         pos = await player.insert(items[0], 1)
+        self._record_user_history(member.id, [items[0]])
         if pos == 0:
             await reply(interaction, messages.now_playing(truncate(items[0].title)))
         else:
@@ -395,54 +415,125 @@ class Music(commands.Cog):
     @app_commands.describe(query="A link or search text")
     @app_commands.guild_only()
     async def playinstant(self, interaction: discord.Interaction, query: app_commands.Range[str, 1, 200]) -> None:
-        member, channel = await self._resolve_voice_channel(interaction)
         if not await safe_defer(interaction):
             return
 
+        member, channel = await self._resolve_voice_channel(interaction)
         guild_id = interaction.guild_id or 0
         avatar_url = extract_user_avatar_url(member)
         items, _, _, _ = await self._load_query_items(query, member.id, guild_id, requester_avatar_url=avatar_url)
         player = await self.bot.registry.get_or_create(guild_id, channel.id, interaction.channel_id or 0)
         await player.play_instant(items[0])
+        self._record_user_history(member.id, [items[0]])
         await reply(interaction, messages.now_playing(truncate(items[0].title)))
+
+    def _record_user_history(self, user_id: int, items: list[QueueItem]) -> None:
+        try:
+            cfg = getattr(self.bot, "cfg", None)
+            if cfg and not getattr(cfg, "user_history_enabled", True):
+                return
+            storage = getattr(self.bot, "storage", None)
+            if storage is None:
+                return
+            max_h = getattr(cfg, "user_history_max", 50) if cfg else 50
+            for item in items:
+                item.from_play_command = True
+                if not getattr(item, "spotify_metadata", None):
+                    coro = storage.record_user_play_history(
+                        user_id,
+                        item.title,
+                        item.artist or "",
+                        item.uri or "",
+                        max_entries=max_h,
+                    )
+                    if asyncio.iscoroutine(coro):
+                        asyncio.create_task(coro)
+        except Exception as exc:
+            log.debug("record_user_history error: %s", exc)
 
     async def _search_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
         try:
+            if not interaction.guild or not interaction.guild_id:
+                return []
+
+            query = current.strip()
+            user_id = interaction.user.id if interaction.user else 0
+
+            # Cases 1 & 2: Nothing typed (< 3 chars): return user history from cache
+            if len(query) < 3:
+                if not user_id:
+                    return []
+                cfg = self.bot.cfg
+                if not getattr(cfg, "user_history_enabled", True):
+                    return []
+                storage = getattr(self.bot, "storage", None)
+                if storage is None:
+                    return []
+
+                history = await storage.get_user_play_history_cached(user_id, limit=50)
+                if not history:
+                    return []
+
+                if len(query) == 0:
+                    candidates = history[:25]
+                else:
+                    q_lower = query.lower()
+                    candidates = [
+                        e
+                        for e in history
+                        if q_lower in e.title.lower() or (e.artist and q_lower in e.artist.lower())
+                    ][:25]
+                    if not candidates:
+                        return []
+
+                choices: list[app_commands.Choice[str]] = []
+                for entry in candidates:
+                    name = format_history_choice_name(entry.title, entry.artist)
+                    val = format_history_choice_value(entry.title, entry.artist, entry.uri)
+                    choices.append(app_commands.Choice(name=name, value=val))
+                    if len(choices) >= 25:
+                        break
+                return choices
+
+            # Case 3: 3 or more characters typed and not a URL: search suggestions
+            if URL_RE.match(query):
+                return []
+
             reg = getattr(self.bot, "registry", None)
             if getattr(self.bot, "is_load_shedding", False) or getattr(reg, "is_load_shedding", False):
                 return []
-            if not interaction.guild or not interaction.guild_id:
-                return []
+
             if not getattr(self.bot.cfg, "autocomplete_search_enabled", True):
                 return []
+
             loader = getattr(self.bot, "loader", None)
             if loader is None or not loader.has_node():
                 return []
-            query = current.strip()
-            if len(query) < 3 or URL_RE.match(query):
-                return []
+
             key = query.lower()
             cached = self._search_cache.get(key)
             if cached is not None:
                 return cached
-            user_id = interaction.user.id if interaction.user else 0
+
             if user_id and self._search_rate_limit.hit(user_id) > 0:
                 return []
-            candidates = await asyncio.wait_for(loader.search_candidates(query, limit=25), timeout=2.0)
-            choices: list[app_commands.Choice[str]] = []
-            for title, author in candidates:
+
+            candidates_data = await asyncio.wait_for(loader.search_candidates(query, limit=10), timeout=2.0)
+            search_choices: list[app_commands.Choice[str]] = []
+            for title, author in candidates_data:
                 if author:
                     label = f"{title} - {author}"
                 else:
                     label = title
                 label = clean(label)[:100]
-                choices.append(app_commands.Choice(name=label, value=label))
-                if len(choices) >= 25:
+                name = format_search_choice_name(label)
+                search_choices.append(app_commands.Choice(name=name, value=label))
+                if len(search_choices) >= 10:
                     break
-            self._search_cache.set(key, choices)
-            return choices
+            self._search_cache.set(key, search_choices)
+            return search_choices
         except Exception:
             return []
 
@@ -517,8 +608,6 @@ class Music(commands.Cog):
     @app_commands.guild_only()
     async def pause(self, interaction: discord.Interaction) -> None:
         player = self._control_gate(interaction)
-        if not await safe_defer(interaction):
-            return
         await player.pause()
         await reply(interaction, messages.paused())
 
@@ -526,8 +615,6 @@ class Music(commands.Cog):
     @app_commands.guild_only()
     async def resume(self, interaction: discord.Interaction) -> None:
         player = self._control_gate(interaction)
-        if not await safe_defer(interaction):
-            return
         await player.resume()
         await reply(interaction, messages.resumed())
 
@@ -555,15 +642,11 @@ class Music(commands.Cog):
             or not self.bot.cfg.vote_skip_enabled
             or humans < self.bot.cfg.vote_skip_min_listeners
         ):
-            if not await safe_defer(interaction):
-                return
             item = await player.skip()
             await reply(interaction, messages.skipped(truncate(item.title)))
             return
 
         # Otherwise vote skip
-        if not await safe_defer(interaction):
-            return
         skipped, votes, needed = await player.vote_skip(member.id, humans)
         if skipped:
             await reply(interaction, messages.vote_skip_passed())
@@ -574,8 +657,6 @@ class Music(commands.Cog):
     @app_commands.guild_only()
     async def previous(self, interaction: discord.Interaction) -> None:
         player = self._control_gate(interaction)
-        if not await safe_defer(interaction):
-            return
         item = await player.previous()
         await reply(interaction, messages.previous_track(truncate(item.title)))
 
@@ -583,8 +664,6 @@ class Music(commands.Cog):
     @app_commands.guild_only()
     async def replay(self, interaction: discord.Interaction) -> None:
         player = self._control_gate(interaction)
-        if not await safe_defer(interaction):
-            return
         await player.replay()
         await reply(interaction, messages.replayed(truncate(player.current.title) if player.current else "current track"))
 
@@ -596,8 +675,6 @@ class Music(commands.Cog):
         seconds = parse_time_string(position)
         if seconds is None:
             raise BotUserError(messages.invalid_time_format())
-        if not await safe_defer(interaction):
-            return
         await player.seek(seconds)
         await reply(interaction, messages.seeked(format_duration(seconds * 1000)))
 
@@ -606,8 +683,6 @@ class Music(commands.Cog):
     @app_commands.guild_only()
     async def forward(self, interaction: discord.Interaction, seconds: app_commands.Range[int, 1, 86400]) -> None:
         player = self._control_gate(interaction)
-        if not await safe_defer(interaction):
-            return
         new_pos = await player.forward(seconds)
         await reply(interaction, messages.forwarded(seconds, format_duration(new_pos * 1000)))
 
@@ -616,8 +691,6 @@ class Music(commands.Cog):
     @app_commands.guild_only()
     async def rewind(self, interaction: discord.Interaction, seconds: app_commands.Range[int, 1, 86400]) -> None:
         player = self._control_gate(interaction)
-        if not await safe_defer(interaction):
-            return
         new_pos = await player.rewind(seconds)
         await reply(interaction, messages.rewound(seconds, format_duration(new_pos * 1000)))
 
@@ -626,8 +699,6 @@ class Music(commands.Cog):
     @app_commands.guild_only()
     async def skipto(self, interaction: discord.Interaction, position: app_commands.Range[int, 1, 100000]) -> None:
         player = self._control_gate(interaction)
-        if not await safe_defer(interaction):
-            return
         item, dropped = await player.skipto(position)
         await reply(interaction, messages.skipto_result(position, truncate(item.title), len(dropped)))
 
@@ -652,9 +723,10 @@ class Music(commands.Cog):
     @app_commands.describe(query="Search text")
     @app_commands.guild_only()
     async def search(self, interaction: discord.Interaction, query: app_commands.Range[str, 1, 200]) -> None:
-        member, channel = await self._resolve_voice_channel(interaction)
         if not await safe_defer(interaction):
             return
+
+        member, channel = await self._resolve_voice_channel(interaction)
 
         outcome = await self.bot.loader.load(interaction.guild_id or 0, query)
         tracks = outcome.tracks[:5]
@@ -706,8 +778,6 @@ class Music(commands.Cog):
         if player is None or player.current is None:
             await reply(interaction, messages.nothing_playing(), ephemeral=True)
             return
-        if not await safe_defer(interaction, ephemeral=True):
-            return
         channel_id = interaction.channel_id or 0
         await player.move_card(channel_id)
         await reply(interaction, messages.nowplaying_moved(), ephemeral=True)
@@ -716,8 +786,6 @@ class Music(commands.Cog):
     @app_commands.guild_only()
     async def stop(self, interaction: discord.Interaction) -> None:
         player = self._control_gate(interaction, dj=True)
-        if not await safe_defer(interaction):
-            return
         await player.stop()
         await reply(interaction, messages.stopped())
 
@@ -725,8 +793,6 @@ class Music(commands.Cog):
     @app_commands.guild_only()
     async def leave(self, interaction: discord.Interaction) -> None:
         self._control_gate(interaction)
-        if not await safe_defer(interaction):
-            return
         await self.bot.registry.destroy(interaction.guild_id or 0, "leave command")
         await reply(interaction, messages.left_channel())
 
@@ -735,8 +801,6 @@ class Music(commands.Cog):
     @app_commands.guild_only()
     async def volume(self, interaction: discord.Interaction, level: app_commands.Range[int, 0, 100]) -> None:
         player = self._control_gate(interaction, dj=True)
-        if not await safe_defer(interaction):
-            return
         storage = getattr(self.bot, "storage", None)
         limit = 100
         if storage is not None and interaction.guild_id:

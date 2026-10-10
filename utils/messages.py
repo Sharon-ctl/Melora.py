@@ -17,8 +17,11 @@ Rules enforced:
 """
 from __future__ import annotations
 
+import re
+
 import discord
 
+from core.data_loader import get_emoji_markup
 from utils.text import clean
 
 BULLET = "•"
@@ -683,7 +686,7 @@ def commands_synced(count: int) -> str:
 
 
 def privacy_policy() -> str:
-    return "Privacy policy • `Melora stores settings and playlists only`"
+    return "Stored data • `Titles and links of requested tracks (max 50 per user across servers); use /reset to delete`"
 
 
 def reset_prompt() -> str:
@@ -740,4 +743,53 @@ def server_busy() -> str:
 
 def took_too_long() -> str:
     return "**Took too long** • `Try again`"
+
+
+# ------------------------------------------------------------- Voice channel status
+def sanitize_voice_status_title(title: str, max_len: int = 80) -> str:
+    """Sanitize track title for voice channel status.
+
+    Strips control characters, newlines, and angle brackets, collapses whitespace,
+    and truncates to max_len (default 80) with '...'.
+    """
+    if not title:
+        return ""
+    text = title.replace("<", "").replace(">", "")
+    # Convert newlines and tabs to spaces before removing control characters
+    text = re.sub(r"[\r\n\t]+", " ", text)
+    text = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_len:
+        text = text[: max_len - 3].rstrip() + "..."
+    return text
+
+
+def voice_status_playing(title: str, *, use_emoji: bool = True) -> str:
+    """Voice channel status when playing a track."""
+    sanitized = sanitize_voice_status_title(title)
+    if use_emoji:
+        emoji = get_emoji_markup("music")
+        if emoji:
+            return f"{emoji} {sanitized}"
+    return sanitized
+
+
+def voice_status_paused() -> str:
+    """Voice channel status when paused (plain text, no emoji)."""
+    return "Paused"
+
+
+def voice_status_idle(*, use_emoji: bool = True) -> str:
+    """Voice channel status when idle (nothing queued, bot connected)."""
+    if use_emoji:
+        emoji = get_emoji_markup("addmusic")
+        if emoji:
+            return f"{emoji} Use /play to listen"
+    return "Use /play to listen"
+
+
+def voice_status_toggled(enabled: bool) -> str:
+    """Settings feedback when voice status is toggled."""
+    state = "Enabled" if enabled else "Disabled"
+    return f"Updated **Voice channel status** • `{state}`"
 

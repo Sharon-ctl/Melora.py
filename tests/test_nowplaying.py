@@ -294,20 +294,45 @@ def test_replace_track_updates_artwork():
 # ---------------------------------------------------------------- Phase 5 card builder tests
 
 
-def test_card_builder_header_uses_live_bot_name():
-    from utils.components_v2 import build_nowplaying_container, Section, TextDisplay
+def test_card_builder_header_uses_playing_state():
+    from unittest.mock import patch
+    from utils.components_v2 import Section, TextDisplay, build_nowplaying_container
 
-    container = build_nowplaying_container(
-        bot_name="LiveBotName",
+    # 1. Playing state with emoji
+    container_playing = build_nowplaying_container(
         title="Sample Song",
         uri="https://example.com/song",
         requester_id=123,
         duration_str="4:15",
-        requester_avatar_url="https://example.com/avatar.png",
+        is_paused=False,
     )
-    section = [c for c in container.children if isinstance(c, Section)][0]
+    section = [c for c in container_playing.children if isinstance(c, Section)][0]
     texts = [c for c in section.children if isinstance(c, TextDisplay)]
-    assert texts[0].content == "**LiveBotName**"
+    assert texts[0].content == "<:music:1558305498531631155> **Playing**"
+
+    # 2. Paused state with emoji
+    container_paused = build_nowplaying_container(
+        title="Sample Song",
+        uri="https://example.com/song",
+        requester_id=123,
+        duration_str="4:15",
+        is_paused=True,
+    )
+    section = [c for c in container_paused.children if isinstance(c, Section)][0]
+    texts = [c for c in section.children if isinstance(c, TextDisplay)]
+    assert texts[0].content == "<:music:1558305498531631155> **Paused**"
+
+    # 3. Fallback without emoji
+    with patch("utils.components_v2.get_emoji_markup", return_value=""):
+        container_fallback_play = build_nowplaying_container(is_paused=False)
+        sec = [c for c in container_fallback_play.children if isinstance(c, Section)][0]
+        txt = [c for c in sec.children if isinstance(c, TextDisplay)]
+        assert txt[0].content == "**Playing**"
+
+        container_fallback_pause = build_nowplaying_container(is_paused=True)
+        sec = [c for c in container_fallback_pause.children if isinstance(c, Section)][0]
+        txt = [c for c in sec.children if isinstance(c, TextDisplay)]
+        assert txt[0].content == "**Paused**"
 
 
 def test_card_builder_thumbnail_is_artwork():

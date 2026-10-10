@@ -168,7 +168,15 @@ class VoiceEvents(commands.Cog):
                 return
             if after.channel is None and player.age() < STALE_LEAVE_SECONDS:
                 return  # stale event from a previous connection in the same guild
-            reason = "disconnected" if after.channel is None else "moved to another channel"
+            if after.channel is not None:
+                old_channel_id = player.voice_channel_id
+                player.voice_channel_id = after.channel.id
+                log.info("guild=%s bot moved voice channel: %s -> %s", guild_id, old_channel_id, after.channel.id)
+                voice_status = getattr(self.bot, "voice_status", None)
+                if voice_status is not None:
+                    await voice_status.on_channel_moved(guild_id, old_channel_id, after.channel.id)
+                return
+            reason = "disconnected"
             log.info("guild=%s bot voice state changed: %s", guild_id, reason)
             await self.bot.registry.destroy(guild_id, reason)
             return

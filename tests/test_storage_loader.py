@@ -120,3 +120,89 @@ def test_storage_lifecycle_and_crud(tmp_path: Path):
         await storage.close()
 
     run_async(scenario())
+
+
+def test_user_play_history_storage(tmp_path: Path):
+    async def scenario():
+        db_path = tmp_path / "history_test.db"
+        storage = Storage(db_path)
+        storage.start()
+
+        user_id = 12345
+        other_user = 67890
+
+        # Initially empty
+        entries = await storage.get_user_play_history(user_id)
+        assert entries == []
+
+        # Record 3 entries
+        await storage.record_user_play_history(
+            user_id, title="Track 1", artist="Artist 1", uri="https://example.com/1", max_entries=3
+        )
+        await asyncio.sleep(0.01)
+        await storage.record_user_play_history(
+            user_id, title="Track 2", artist="Artist 2", uri="https://example.com/2", max_entries=3
+        )
+        await asyncio.sleep(0.01)
+        await storage.record_user_play_history(
+            user_id, title="Track 3", artist="Artist 3", uri="https://example.com/3", max_entries=3
+        )
+
+        entries = await storage.get_user_play_history(user_id)
+        assert len(entries) == 3
+        # Newest first
+        assert entries[0].title == "Track 3"
+        assert entries[1].title == "Track 2"
+        assert entries[2].title == "Track 1"
+
+        # Cached read
+        cached_entries = await storage.get_user_play_history_cached(user_id)
+        assert len(cached_entries) == 3
+        assert cached_entries[0].title == "Track 3"
+
+        # Replaying Track 1 moves it to top (de-duplication)
+        await asyncio.sleep(0.01)
+        await storage.record_user_play_history(
+            user_id, title="Track 1", artist="Artist 1", uri="https://example.com/1", max_entries=3
+        )
+        entries_after_replay = await storage.get_user_play_history(user_id)
+        assert len(entries_after_replay) == 3
+        assert entries_after_replay[0].title == "Track 1"
+        assert entries_after_replay[1].title == "Track 3"
+        assert entries_after_replay[2].title == "Track 2"
+
+        # Pruning: record a 4th unique track with max_entries=3 -> oldest (Track 2) is pruned
+        await asyncio.sleep(0.01)
+        await storage.record_user_play_history(
+            user_id, title="Track 4", artist="Artist 4", uri="https://example.com/4", max_entries=3
+        )
+        entries_after_prune = await storage.get_user_play_history(user_id)
+        assert len(entries_after_prune) == 3
+        assert entries_after_prune[0].title == "Track 4"
+        assert entries_after_prune[1].title == "Track 1"
+        assert entries_after_prune[2].title == "Track 3"
+        assert all(e.title != "Track 2" for e in entries_after_prune)
+
+        # Other user has independent history
+        await storage.record_user_play_history(
+            other_user, title="Other Track", artist="Other Artist", uri="https://example.com/other", max_entries=3
+        )
+        other_entries = await storage.get_user_play_history(other_user)
+        assert len(other_entries) == 1
+        assert other_entries[0].title == "Other Track"
+
+        # Guild removal / delete_guild_data does NOT delete user play history
+        await storage.delete_guild_data(999)
+        assert len(await storage.get_user_play_history(user_id)) == 3
+
+        # User reset: deletes user_id history rows and invalidates cache
+        await storage.reset_user_data(user_id)
+        assert await storage.get_user_play_history(user_id) == []
+        assert storage._history_cache.get(user_id) is None
+
+        # Other user's history is still preserved after user_id reset
+        assert len(await storage.get_user_play_history(other_user)) == 1
+
+        await storage.close()
+
+    run_async(scenario())

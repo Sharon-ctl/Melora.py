@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Sharon-ctl/Melora.py/actions/workflows/ci.yml/badge.svg)](https://github.com/Sharon-ctl/Melora.py/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3119/)
-[![Tests](https://img.shields.io/badge/tests-171%20passed-brightgreen.svg)](https://github.com/Sharon-ctl/Melora.py)
+[![Tests](https://img.shields.io/badge/tests-238%20passed-brightgreen.svg)](https://github.com/Sharon-ctl/Melora.py)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
 A slash-command-only music bot built for unattended operation. It connects to an existing Lavalink 4.x server as a client. It does not run or configure Lavalink.
@@ -16,6 +16,26 @@ A slash-command-only music bot built for unattended operation. It connects to an
 - **Python:** Python 3.11+ (tested on Python 3.11.9)
 - **Java:** Java 17 or higher (required to run Lavalink 4.x)
 - **Discord Bot:** An application created in the Discord Developer Portal
+
+## Bot Invite & Required Permissions
+
+Invite the bot to your Discord server using the permission integer calculated dynamically from `discord.Permissions(view_channel=True, send_messages=True, connect=True, speak=True, set_voice_channel_status=True)`:
+
+- **Permission Integer:** `281474979859456`
+- **OAuth2 Scopes:** `bot applications.commands`
+- **Required Permissions:**
+  - View Channels (`view_channel`)
+  - Send Messages (`send_messages`)
+  - Connect (`connect`)
+  - Speak (`speak`)
+  - Set Voice Channel Status (`set_voice_channel_status`)
+
+Invite URL format:
+```
+https://discord.com/api/oauth2/authorize?client_id=<YOUR_CLIENT_ID>&permissions=281474979859456&scope=bot%20applications.commands
+```
+
+> **Important Note for Existing Servers:** Servers that already invited the bot must grant the **"Set Voice Channel Status"** permission to the bot's role or voice channel overrides for dynamic voice channel status updates to function. If the permission is missing, the bot skips updates quietly without disrupting playback.
 
 ---
 
@@ -262,6 +282,10 @@ Spotify integration operates via web scraping (using `spotifyscraper` with an ai
 | `BACKUP_COUNT` | 7 | Number of daily database backups to retain |
 | `MENTION_REPLY_COOLDOWN`| 10.0 | Per-user cooldown for bot mention replies |
 | `AUTOCOMPLETE_SEARCH_ENABLED` | true | Enable live search autocomplete suggestions |
+| `VOICE_STATUS_ENABLED` | true | Enable dynamic voice channel status updates globally |
+| `VOICE_STATUS_USE_EMOJI` | true | Use custom emojis in voice status (falls back to plain text if false or on Discord 400) |
+| `USER_HISTORY_ENABLED` | true | Enable personal play history suggestions in autocomplete |
+| `USER_HISTORY_MAX` | 50 | Maximum play history tracks stored per user |
 
 ## Commands
 
@@ -326,6 +350,7 @@ All commands are slash commands only, except mentioning the bot in chat.
 - `/settings max-queue count`: Maximum queue capacity.
 - `/settings restrict [channel]`: Restrict music commands to a channel.
 - `/settings restore-queue enabled`: Opt-in queue snapshot restoration on restart.
+- `/settings voice-status enabled`: Toggle dynamic voice channel status updates for this server (default true).
 - `/defaultvolume volume`: Set server starting volume.
 - `/247`: Toggle 24/7 mode to prevent idle and alone disconnects.
 
@@ -342,8 +367,8 @@ All commands are slash commands only, except mentioning the bot in chat.
 - `/status`: Components V2 card with latency, uptime, Lavalink node stats, voice bitrate, and owner diagnostics.
 - `/help`: Dynamically generated command list from tree.
 - `/errors [count]`: Owner only: bounded in-memory ring buffer of recent unhandled error logs.
-- `/privacy`: Explanation of what data is stored and why.
-- `/reset`: Delete all your stored data (favorites and playlists) with secondary button confirmation.
+- `/privacy`: Lists what data is stored (favorites, playlists, and titles and links of tracks requested, kept per user across servers, at most 50) and how to delete it.
+- `/reset`: Delete all your stored data (favorites, playlists, and play history) with secondary button confirmation.
 
 ### Bot Mention Reply
 - When a user mentions only the bot in a text channel, the bot replies with a compact Components V2 card pointing to `/help`.
@@ -366,7 +391,10 @@ The bot features a streamlined visual presentation across all interactions:
 - Built with Discord Components V2 using a single Container with neutral gray accent colour.
 - **Section Component:**
   - Accessory: static 128px PNG `Thumbnail` of the song artwork (falls back to bot avatar).
-  - Text Display 1: Bold live bot display name (`guild.me.display_name`, falling back to `client.user.name`).
+  - Text Display 1: Playback state header text:
+    - Playing: `<:music:1558305498531631155> **Playing**` (plain fallback `**Playing**`).
+    - Paused: `<:music:1558305498531631155> **Paused**` (plain fallback `**Paused**`).
+    - Edited immediately on pause and resume so header matches real state.
   - Text Display 2:
     - Clickable markdown track link: `### [Song Title](track uri)` (title markdown escaped, prefixed with `###`, and truncated to 80 characters).
     - Silent requester mention: `**Requested by:** <@requester_id>` (sent and edited with `allowed_mentions=AllowedMentions.none()` so it never pings or highlights).
@@ -469,8 +497,8 @@ All user-facing messages strictly follow three consistent patterns:
 
 ## Style & Rule Exceptions
 
-- **Typography & Encoding:** The bullet character `•` (U+2022) is permitted in messages and code. All other characters must remain standard ASCII. Log handlers and file I/O enforce UTF-8.
-- **Custom Emojis:** Custom emojis are strictly isolated to the 5 Now Playing card buttons. No other emojis are allowed anywhere else in the bot.
+- **Typography & Encoding:** The bullet character `•` (U+2022) is permitted in messages and code. The Unicode characters U+1F50E (magnifying glass) and U+1F55B (twelve o'clock) are permitted exclusively in `utils/autocomplete.py` as autocomplete choice display prefixes. All other characters must remain standard ASCII. Log handlers and file I/O enforce UTF-8.
+- **Custom Emojis:** Custom emojis (the `<:name:id>` markup, loaded only from `data/emojis.json`) are allowed in exactly three places: the Now Playing card buttons, the Now Playing header, and the voice channel status. Nowhere else.
 - **Button Styles:** All buttons across all cards use `ButtonStyle.secondary`, with the sole exception of the `Stop` button on the Now Playing card which uses `ButtonStyle.danger`.
 
 ## Verification & Benchmarks
@@ -481,7 +509,7 @@ Run the complete verification protocol, soak test, and scale benchmark:
 # 1. Compilation & Type Integrity
 .venv\Scripts\python.exe -m compileall -q .
 
-# 2. Complete Test Suite (211 tests)
+# 2. Complete Test Suite (238 tests)
 .venv\Scripts\python.exe -m pytest
 
 # 3. Linter & Style Consistency

@@ -389,10 +389,14 @@ def test_timing_percentiles_and_warning(caplog):
     assert play_stats["ack_p50_ms"] > 0
     assert play_stats["total_p50_ms"] > 0
 
-    # Warning logged when exceeding 1.5s
+    # Warning logged when exceeding budget
     with caplog.at_level(logging.WARNING):
-        record_handler_time("play", 1.8)
+        record_handler_time("volume", 1.8)
     assert any("execution took 1.800s (> 1.5s budget)" in record.message for record in caplog.records)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        record_handler_time("play", 6.5)
+    assert any("execution took 6.500s (> 6.0s budget)" in record.message for record in caplog.records)
 
     clear_timing_buffers()
 

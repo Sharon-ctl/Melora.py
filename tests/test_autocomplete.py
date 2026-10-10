@@ -12,6 +12,7 @@ from core.queue import QueueItem
 from core.registry import PlayerRegistry
 from core.storage import Storage, StoredTrack
 from tests.fakes import FakeBackend, FakeLoader, make_config, make_track
+from utils.autocomplete import HISTORY_PREFIX, SEARCH_PREFIX
 
 
 def build_test_setup():
@@ -120,17 +121,18 @@ def test_search_autocomplete():
         music_cog = Music(bot)
         inter = fake_interaction(guild_id=1, user_id=123)
 
-        # Short query (< 3 chars) returns empty
+        # Short query (< 3 chars) returns empty when user has no history
         assert await music_cog._search_autocomplete(inter, "ab") == []
 
         # URL query returns empty
         assert await music_cog._search_autocomplete(inter, "https://youtube.com/watch?v=123") == []
 
-        # Valid query returns up to 25 results
+        # Valid query returns up to 10 results with search prefix
         results = await music_cog._search_autocomplete(inter, "bohemian rhapsody")
-        assert len(results) == 25
+        assert len(results) == 10
         assert "bohemian rhapsody result 1" in results[0].name
-        assert results[0].name == results[0].value
+        assert results[0].name == f"{SEARCH_PREFIX} {results[0].value}"
+        assert SEARCH_PREFIX not in results[0].value
 
         # Cached on repeat
         cached = await music_cog._search_autocomplete(inter, "bohemian rhapsody")
@@ -148,6 +150,150 @@ def test_search_autocomplete():
         bot.cfg = make_config(AUTOCOMPLETE_SEARCH_ENABLED=True)
         loader.has_node = lambda: False
         assert await music_cog._search_autocomplete(inter, "testing offline") == []
+
+    asyncio.run(scenario())
+
+
+def test_history_autocomplete_empty_and_filtered():
+    async def scenario():
+        bot, _, _, storage = build_test_setup()
+        music_cog = Music(bot)
+        user_id = 42
+
+        # 1. Empty history returns []
+        inter_empty = fake_interaction(guild_id=1, user_id=user_id)
+        assert await music_cog._search_autocomplete(inter_empty, "") == []
+        assert await music_cog._search_autocomplete(inter_empty, "a") == []
+        assert await music_cog._search_autocomplete(inter_empty, "ab") == []
+
+        # 2. Populate 30 tracks for user_id with timestamps spaced out
+        # Track 30 is newest, Track 1 is oldest
+        for i in range(1, 31):
+            artist = "Beatles" if i % 2 == 0 else "Queen"
+            uri = f"https://example.com/track_{i}" if i != 20 else "https://example.com/" + ("x" * 120)
+            await storage.record_user_play_history(
+                user_id=user_id,
+                title=f"Song Number {i} With Very Long Title " + ("A" * 60 if i == 6 else ""),
+                artist=artist,
+                uri=uri,
+                max_entries=50,
+            )
+            await asyncio.sleep(0.002)
+
+        # Populate a different user's history
+        await storage.record_user_play_history(
+            user_id=999,
+            title="Secret Song By Another User",
+            artist="Another Artist",
+            uri="https://example.com/secret",
+            max_entries=50,
+        )
+
+        # 3. Empty input "" shows user's own history, newest first, up to 25 entries
+        inter = fake_interaction(guild_id=1, user_id=user_id)
+        results = await music_cog._search_autocomplete(inter, "")
+        assert len(results) == 25
+        # Newest first: track 30 should be at index 0
+        assert "Song Number 30" in results[0].name
+        assert results[0].name.startswith(f"{HISTORY_PREFIX} ")
+        assert len(results[0].name) <= 100
+        # Value contains no emoji
+        assert HISTORY_PREFIX not in results[0].value
+        assert SEARCH_PREFIX not in results[0].value
+        assert results[0].value == "https://example.com/track_30"
+
+        # Check all 25 results
+        for r in results:
+            assert r.name.startswith(f"{HISTORY_PREFIX} ")
+            assert len(r.name) <= 100
+            assert HISTORY_PREFIX not in r.value
+            assert SEARCH_PREFIX not in r.value
+            # Never show user 999's tracks
+            assert "Secret Song" not in r.name
+
+        # Track with long URI (> 100 chars, track 20) uses Title Artist
+        track_20_results = [r for r in results if "Song Number 20" in r.name]
+        assert len(track_20_results) == 1
+        assert not track_20_results[0].value.startswith("https://")
+        assert "Song Number 20" in track_20_results[0].value
+        assert len(track_20_results[0].value) <= 100
+
+        # 4. 1 or 2 characters typed: filter history by title or artist (case-insensitive)
+        queen_results = await music_cog._search_autocomplete(inter, "qu")
+        assert len(queen_results) > 0
+        assert all("Queen" in r.name for r in queen_results)
+        assert all(r.name.startswith(f"{HISTORY_PREFIX} ") for r in queen_results)
+
+        # Query "6" -> matches "Song Number 6", "Song Number 16", "Song Number 26"
+        six_results = await music_cog._search_autocomplete(inter, "6")
+        assert len(six_results) == 3
+        # Check track 6 truncation <= 100 chars
+        track_6 = [r for r in six_results if "Song Number 6" in r.name][0]
+        assert len(track_6.name) <= 100
+
+        # 1 or 2 characters with no match returns []
+        no_match = await music_cog._search_autocomplete(inter, "zz")
+        assert no_match == []
+
+        # 5. Isolation: user 999 sees only their track
+        inter_999 = fake_interaction(guild_id=1, user_id=999)
+        results_999 = await music_cog._search_autocomplete(inter_999, "")
+        assert len(results_999) == 1
+        assert "Secret Song By Another User" in results_999[0].name
+        assert results_999[0].value == "https://example.com/secret"
+
+        await storage.close()
+
+    asyncio.run(scenario())
+
+
+def test_history_autocomplete_timeout_disabled_and_shedding():
+    async def scenario():
+        bot, _, _, storage = build_test_setup()
+        music_cog = Music(bot)
+        user_id = 77
+
+        # Seed history
+        await storage.record_user_play_history(
+            user_id=user_id,
+            title="Cached Track",
+            artist="Artist",
+            uri="https://example.com/cached",
+            max_entries=50,
+        )
+        inter = fake_interaction(guild_id=1, user_id=user_id)
+
+        # 1. History is cached. Now simulate load shedding on bot
+        bot.is_load_shedding = True
+
+        # Case < 3 chars: history is still returned from cache under load shedding!
+        history_choices = await music_cog._search_autocomplete(inter, "")
+        assert len(history_choices) == 1
+        assert "Cached Track" in history_choices[0].name
+
+        # Case >= 3 chars: external search suggestions are shed under load shedding!
+        search_choices = await music_cog._search_autocomplete(inter, "cached")
+        assert search_choices == []
+
+        # 2. Disabled config: returns [] for cases 1 and 2
+        bot.cfg = make_config(USER_HISTORY_ENABLED=False)
+        assert await music_cog._search_autocomplete(inter, "") == []
+        assert await music_cog._search_autocomplete(inter, "c") == []
+        assert await music_cog._search_autocomplete(inter, "ca") == []
+
+        # 3. Storage timeout (> 1.5s): cache miss that times out returns []
+        bot.cfg = make_config(USER_HISTORY_ENABLED=True)
+        storage._history_cache.invalidate(user_id)
+
+        async def slow_get_history(uid, limit=50):
+            await asyncio.sleep(2.0)
+            return []
+
+        storage.get_user_play_history = slow_get_history
+        timeout_choices = await music_cog._search_autocomplete(inter, "")
+        assert timeout_choices == []
+
+        await storage.close()
 
     asyncio.run(scenario())
 

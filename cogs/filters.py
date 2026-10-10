@@ -15,7 +15,7 @@ from utils import messages
 from utils.checks import guild_member, require_dj
 from utils.components_v2 import PaginatedPage, PaginatedView, reply_card
 from utils.errors import BotUserError, NotInVoice, NothingPlaying, WrongChannel
-from utils.interaction import reply, safe_defer
+from utils.interaction import reply
 from utils.text import clean
 
 if TYPE_CHECKING:
@@ -89,9 +89,6 @@ class Filters(commands.Cog):
         if preset_key not in self.eq_presets:
             raise BotUserError(messages.unknown_preset(name, list(self.eq_presets.keys())))
 
-        if not await safe_defer(interaction):
-            return
-
         bands = self.eq_presets[preset_key]
         await player.set_eq(preset_key, bands)
         await reply(interaction, messages.eq_preset_applied(preset_key))
@@ -116,17 +113,12 @@ class Filters(commands.Cog):
     @app_commands.guild_only()
     async def eq_reset(self, interaction: discord.Interaction) -> None:
         player = self._control_gate(interaction, dj=True)
-        if not await safe_defer(interaction):
-            return
         await player.reset_eq()
         await reply(interaction, messages.eq_reset())
 
     @eq_group.command(name="list", description="List available equalizer presets")
     @app_commands.guild_only()
     async def eq_list(self, interaction: discord.Interaction) -> None:
-        if not await safe_defer(interaction):
-            return
-
         guild_id = interaction.guild_id or 0
 
         def eq_list_provider(page_num: int) -> PaginatedPage:
@@ -172,9 +164,6 @@ class Filters(commands.Cog):
         if filter_key not in self.filter_presets:
             raise BotUserError(messages.unknown_preset(name, list(self.filter_presets.keys())))
 
-        if not await safe_defer(interaction):
-            return
-
         config = self.filter_presets[filter_key]
         await player.apply_filter(filter_key, config)
         await reply(interaction, messages.filter_added(filter_key))
@@ -207,9 +196,6 @@ class Filters(commands.Cog):
         if filter_key not in player.applied_filters:
             raise BotUserError(messages.filter_not_active(filter_key))
 
-        if not await safe_defer(interaction):
-            return
-
         config = self.filter_presets[filter_key]
         await player.remove_filter(filter_key, config)
         await reply(interaction, messages.filter_removed(filter_key))
@@ -235,17 +221,12 @@ class Filters(commands.Cog):
     @app_commands.guild_only()
     async def filter_reset(self, interaction: discord.Interaction) -> None:
         player = self._control_gate(interaction, dj=True)
-        if not await safe_defer(interaction):
-            return
         await player.reset_filters()
         await reply(interaction, messages.filters_reset())
 
     @filter_group.command(name="list", description="List available filter presets and active filters")
     @app_commands.guild_only()
     async def filter_list(self, interaction: discord.Interaction) -> None:
-        if not await safe_defer(interaction):
-            return
-
         guild_id = interaction.guild_id or 0
 
         def filter_list_provider(page_num: int) -> PaginatedPage:
@@ -287,8 +268,6 @@ class Filters(commands.Cog):
         speed: app_commands.Range[float, 0.5, 2.0] = 0.98,
     ) -> None:
         player = self._control_gate(interaction, dj=True)
-        if not await safe_defer(interaction):
-            return
         await player.set_speed(speed)
         if abs(speed - 1.0) < 0.01:
             await reply(interaction, messages.speed_reset())

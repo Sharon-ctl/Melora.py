@@ -89,6 +89,17 @@ async def reply(
         log.info("Interaction expired before reply could be sent")
         return False
 
+    if view is None and content and len(content.strip().splitlines()) > 1:
+        from utils.components_v2 import BaseCardView, TextDisplay, create_card_container, reply_card
+
+        text_disp = TextDisplay(content)
+        container = create_card_container(text_disp)
+        user = getattr(interaction, "user", None)
+        user_id = getattr(user, "id", 0) if user else 0
+        card_view = BaseCardView(timeout=60.0, author_id=user_id)
+        card_view.add_item(container)
+        return await reply_card(interaction, card_view, ephemeral=ephemeral)
+
     kwargs: dict[str, Any] = {"allowed_mentions": _NO_MENTIONS, "ephemeral": ephemeral}
     if content:
         kwargs["content"] = content

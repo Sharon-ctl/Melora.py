@@ -103,6 +103,11 @@ async def test_explain_query_plan_indexes():
             "SELECT uri, title, artist, duration_ms FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC",
             (1,),
         ),
+        (
+            "user_play_history by user_id",
+            "SELECT title, artist, uri, played_at FROM user_play_history WHERE user_id = ? ORDER BY played_at DESC LIMIT ?",
+            (1, 25),
+        ),
     ]
 
     for name, query, params in hot_queries:

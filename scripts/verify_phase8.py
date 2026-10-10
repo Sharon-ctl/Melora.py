@@ -38,7 +38,11 @@ def scan_non_ascii(files: list[Path]) -> list[str]:
                     # The bullet character U+2022 is allowed in bot messages and source
                     if ord(ch) == 0x2022:
                         continue
-                    hits.append(f"{file.relative_to(WORKSPACE)}:{line_no} Non-ASCII char {ch!r} (ord {ord(ch)})")
+                    # U+1F50E and U+1F55B are allowed ONLY in autocomplete.py
+                    if file.name == "autocomplete.py" and ord(ch) in (0x1F50E, 0x1F55B):
+                        continue
+                    rel = file.relative_to(WORKSPACE) if file.is_relative_to(WORKSPACE) else file.name
+                    hits.append(f"{rel}:{line_no} Non-ASCII char {ch!r} (ord {ord(ch)})")
                     break
     return hits
 
@@ -115,6 +119,46 @@ def scan_todos_and_empty_excepts(files: list[Path]) -> list[str]:
     return hits
 
 
+def scan_custom_emoji_placement(files: list[Path]) -> list[str]:
+    """Ensure custom emojis (<:name:id>) appear only in buttons, nowplaying header, and voice status."""
+    hits: list[str] = []
+    emoji_pattern = re.compile(r"<a?:[a-zA-Z0-9_]+:[0-9]+>")
+
+    allowed_code_files = {
+        "components_v2.py",
+        "voice_status.py",
+        "messages.py",
+        "data_loader.py",
+    }
+
+    for file in files:
+        if file.suffix != ".py":
+            continue
+        if file.name.startswith("test_") or file.name in ("run_soak.py", "run_scale.py", "fakes.py"):
+            continue
+        if file.name not in allowed_code_files:
+            content = file.read_text(encoding="utf-8")
+            for line_no, line in enumerate(content.splitlines(), start=1):
+                m = emoji_pattern.search(line)
+                if m:
+                    hits.append(
+                        f"{file.relative_to(WORKSPACE)}:{line_no}: Custom emoji markup {m.group(0)!r} forbidden here"
+                    )
+        elif file.name == "messages.py":
+            content = file.read_text(encoding="utf-8")
+            in_voice_status_section = False
+            for line_no, line in enumerate(content.splitlines(), start=1):
+                if "# Voice channel status" in line or "voice_status" in line:
+                    in_voice_status_section = True
+                m = emoji_pattern.search(line)
+                if m and not in_voice_status_section:
+                    hits.append(
+                        f"{file.relative_to(WORKSPACE)}:{line_no}: Custom emoji markup {m.group(0)!r} "
+                        "forbidden outside voice status section in messages.py"
+                    )
+    return hits
+
+
 def main() -> int:
     files = get_files_to_check()
     all_hits: dict[str, list[str]] = {
@@ -123,6 +167,7 @@ def main() -> int:
         "Non-secondary ButtonStyle": scan_button_styles(files),
         "Forbidden Intents": scan_forbidden_intents(files),
         "TODO / Empty except": scan_todos_and_empty_excepts(files),
+        "Custom Emoji Placement": scan_custom_emoji_placement(files),
     }
 
     total_failures = 0

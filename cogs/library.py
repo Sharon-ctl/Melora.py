@@ -110,9 +110,6 @@ class Library(commands.Cog):
     @favorites_group.command(name="list", description="List your favorite tracks")
     @app_commands.guild_only()
     async def favorites_list(self, interaction: discord.Interaction) -> None:
-        if not await safe_defer(interaction, ephemeral=True):
-            return
-
         user_id = interaction.user.id
 
         async def favorites_provider(page_num: int) -> PaginatedPage:
@@ -165,9 +162,6 @@ class Library(commands.Cog):
             raise NothingPlaying()
 
         current = player.current
-        if not await safe_defer(interaction, ephemeral=True):
-            return
-
         try:
             existing = await self.bot.storage.get_favorites(interaction.user.id)
             if self.bot.cfg.max_favorites_per_user > 0 and len(existing) >= self.bot.cfg.max_favorites_per_user:
@@ -235,8 +229,6 @@ class Library(commands.Cog):
     @app_commands.describe(position="Position number from /favorites list")
     @app_commands.guild_only()
     async def favorites_remove(self, interaction: discord.Interaction, position: app_commands.Range[int, 1, 1000]) -> None:
-        if not await safe_defer(interaction, ephemeral=True):
-            return
         try:
             removed = await self.bot.storage.remove_favorite(interaction.user.id, position)
             self._fav_cache._data.pop(interaction.user.id, None)
@@ -286,8 +278,6 @@ class Library(commands.Cog):
     @favorites_group.command(name="clear", description="Clear all your favorite tracks")
     @app_commands.guild_only()
     async def favorites_clear(self, interaction: discord.Interaction) -> None:
-        if not await safe_defer(interaction, ephemeral=True):
-            return
         try:
             await self.bot.storage.clear_favorites(interaction.user.id)
             self._fav_cache._data.pop(interaction.user.id, None)
@@ -302,8 +292,6 @@ class Library(commands.Cog):
     @app_commands.describe(name="Playlist name")
     @app_commands.guild_only()
     async def playlist_create(self, interaction: discord.Interaction, name: app_commands.Range[str, 1, 50]) -> None:
-        if not await safe_defer(interaction, ephemeral=True):
-            return
         clean_name = name.strip()
         try:
             existing = await self.bot.storage.list_playlists(interaction.user.id)
@@ -322,8 +310,6 @@ class Library(commands.Cog):
     @app_commands.describe(name="Playlist name")
     @app_commands.guild_only()
     async def playlist_delete(self, interaction: discord.Interaction, name: str) -> None:
-        if not await safe_defer(interaction, ephemeral=True):
-            return
         clean_name = name.strip()
         try:
             deleted = await self.bot.storage.delete_playlist(interaction.user.id, clean_name)
@@ -351,8 +337,6 @@ class Library(commands.Cog):
         old_name: str,
         new_name: app_commands.Range[str, 1, 50],
     ) -> None:
-        if not await safe_defer(interaction, ephemeral=True):
-            return
         clean_old = old_name.strip()
         clean_new = new_name.strip()
         try:
@@ -376,9 +360,6 @@ class Library(commands.Cog):
     @playlist_group.command(name="list", description="List all your playlists")
     @app_commands.guild_only()
     async def playlist_list(self, interaction: discord.Interaction) -> None:
-        if not await safe_defer(interaction, ephemeral=True):
-            return
-
         user_id = interaction.user.id
 
         async def playlists_provider(page_num: int) -> PaginatedPage:
@@ -423,9 +404,6 @@ class Library(commands.Cog):
     @app_commands.describe(name="Playlist name")
     @app_commands.guild_only()
     async def playlist_view(self, interaction: discord.Interaction, name: str) -> None:
-        if not await safe_defer(interaction, ephemeral=True):
-            return
-
         user_id = interaction.user.id
         clean_name = name.strip()
 
@@ -549,8 +527,6 @@ class Library(commands.Cog):
         name: str,
         index: app_commands.Range[int, 1, 1000],
     ) -> None:
-        if not await safe_defer(interaction, ephemeral=True):
-            return
         clean_name = name.strip()
         try:
             removed = await self.bot.storage.remove_playlist_track(interaction.user.id, clean_name, index)

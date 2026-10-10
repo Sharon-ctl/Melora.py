@@ -67,6 +67,9 @@ class PlayerRegistry:
             self.flusher.set_cadence(4.0)
         else:
             self.flusher.reset_cadence()
+        voice_status = getattr(self.services, "voice_status", None)
+        if voice_status is not None:
+            voice_status.set_load_shedding(active)
 
     @property
     def is_load_shedding(self) -> bool:
@@ -154,7 +157,27 @@ class PlayerRegistry:
         self.scheduler.cancel_guild(guild_id)
         self.flusher.cancel(guild_id)
         player = self._players.pop(guild_id, None)
+
+        voice_status = getattr(self.services, "voice_status", None)
+        if voice_status is not None:
+            is_forced = reason in (
+                "disconnected",
+                "voice channel deleted",
+                "channel deleted",
+                "kick",
+                "4014",
+            )
+            try:
+                await voice_status.on_player_destroy(guild_id, player, forced=is_forced)
+            except (Exception, asyncio.CancelledError) as vs_exc:
+                log.debug("guild=%s voice status destroy cleanup error: %s", guild_id, vs_exc)
+
         if player is not None:
+            if reason == "shutdown":
+                try:
+                    await player.save_snapshot_now()
+                except (Exception, asyncio.CancelledError) as snap_exc:
+                    log.debug("guild=%s snapshot save error on shutdown: %s", guild_id, snap_exc)
             # Delete the now playing card before shutting down tasks
             card_ch = player.nowplaying_channel_id
             card_msg = player.nowplaying_message_id
@@ -163,15 +186,11 @@ class PlayerRegistry:
             if card_ch and card_msg:
                 try:
                     await self.services.backend.delete_nowplaying_card(card_ch, card_msg)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
+                except (Exception, asyncio.CancelledError):
                     log.debug("guild=%s card delete on destroy failed", guild_id, exc_info=True)
         try:
             await self.services.backend.purge(guild_id)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             log.exception("guild=%s purge failed during destroy", guild_id)
         if player is not None:
             log.info("guild=%s player destroyed reason=%s", guild_id, reason)

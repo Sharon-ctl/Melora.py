@@ -33,12 +33,24 @@ def _dummy_arg_for(param: inspect.Parameter, hint: type):
     return "Dummy"
 
 
+VOICE_STATUS_EXEMPTIONS = {
+    "sanitize_voice_status_title",
+    "voice_status_playing",
+    "voice_status_paused",
+    "voice_status_idle",
+}
+
+
 def test_messages_catalog_format_and_encoding():
     functions = inspect.getmembers(msg_mod, inspect.isfunction)
     assert len(functions) >= 50, f"Expected comprehensive catalog, found {len(functions)}"
 
     for name, func in functions:
+        if func.__module__ != msg_mod.__name__:
+            continue
         if name.startswith("_") or name == "escape_subject" or name == "clean":
+            continue
+        if name in VOICE_STATUS_EXEMPTIONS:
             continue
 
         sig = inspect.signature(func)
@@ -80,3 +92,40 @@ def test_messages_catalog_format_and_encoding():
             matches_a = bool(PATTERN_A.match(line))
             matches_b = bool(PATTERN_B.match(line))
             assert matches_a or matches_b, f"{name} line {line!r} does not match Pattern A or B"
+
+
+def test_voice_status_messages_and_sanitizer():
+    # Sanitizing tests
+    assert msg_mod.sanitize_voice_status_title("Hello <World> \n Test\tTitle") == "Hello World Test Title"
+    assert msg_mod.sanitize_voice_status_title("Track with \x00\x1f controls") == "Track with controls"
+    long_title = "A" * 100
+    sanitized_long = msg_mod.sanitize_voice_status_title(long_title)
+    assert len(sanitized_long) == 80
+    assert sanitized_long.endswith("...")
+    assert sanitized_long == "A" * 77 + "..."
+
+    # Voice status texts
+    # Playing with emoji
+    playing_with_emoji = msg_mod.voice_status_playing("Never Gonna Give You Up", use_emoji=True)
+    assert "<:music:1558305498531631155> Never Gonna Give You Up" == playing_with_emoji
+    # Playing without emoji
+    playing_plain = msg_mod.voice_status_playing("Never Gonna Give You Up", use_emoji=False)
+    assert playing_plain == "Never Gonna Give You Up"
+
+    # Paused
+    assert msg_mod.voice_status_paused() == "Paused"
+
+    # Idle with emoji
+    idle_with_emoji = msg_mod.voice_status_idle(use_emoji=True)
+    assert "<:addmusic:1526007757826691232> Use /play to listen" == idle_with_emoji
+    # Idle without emoji
+    idle_plain = msg_mod.voice_status_idle(use_emoji=False)
+    assert idle_plain == "Use /play to listen"
+
+    # Settings toggle message matches Pattern A
+    toggled = msg_mod.voice_status_toggled(True)
+    assert PATTERN_A.match(toggled)
+    assert "Enabled" in toggled
+    toggled_off = msg_mod.voice_status_toggled(False)
+    assert PATTERN_A.match(toggled_off)
+    assert "Disabled" in toggled_off

@@ -22,7 +22,7 @@ import discord
 from discord import ButtonStyle
 from discord.ui import ActionRow, Button, Container, LayoutView, Section, Select, TextDisplay, Thumbnail
 
-from core.data_loader import load_emojis
+from core.data_loader import get_emoji_markup, load_emojis
 from utils import messages
 from utils.text import format_duration
 
@@ -443,12 +443,14 @@ async def reply_card(
     """
     if isinstance(view, BaseCardView):
         view.is_ephemeral = ephemeral
-        view.owner_id = view.author_id or interaction.user.id
+        user = getattr(interaction, "user", None)
+        user_id = getattr(user, "id", 0) if user else 0
+        view.owner_id = view.author_id or user_id
         view.author_id = view.owner_id
         view.guild_id = view.guild_id or (interaction.guild_id or 0)
         if kind:
             view.kind = kind
-        view._client = interaction.client
+        view._client = getattr(interaction, "client", None)
         if ephemeral:
             view.interaction = interaction
 
@@ -459,6 +461,9 @@ async def reply_card(
                 interaction.response.send_message(view=view, ephemeral=ephemeral),
                 timeout=CARD_SEND_TIMEOUT,
             )
+            from utils.interaction import _record_ack
+
+            _record_ack(interaction)
             if not ephemeral:
                 try:
                     sent_msg = await interaction.original_response()
@@ -466,16 +471,30 @@ async def reply_card(
                     log.debug("Failed to store message on card view: %s", exc)
         else:
             # If already deferred:
-            try:
-                sent_msg = await asyncio.wait_for(
-                    interaction.edit_original_response(view=view),
-                    timeout=CARD_SEND_TIMEOUT,
-                )
-            except (discord.NotFound, discord.HTTPException, asyncio.TimeoutError):
-                sent_msg = await asyncio.wait_for(
-                    interaction.followup.send(view=view, ephemeral=ephemeral),
-                    timeout=CARD_SEND_TIMEOUT,
-                )
+            thinking = bool(getattr(interaction, "extras", {}).pop("public_deferred", False))
+            if ephemeral and thinking:
+                try:
+                    await asyncio.wait_for(interaction.delete_original_response(), timeout=CARD_SEND_TIMEOUT)
+                except (discord.NotFound, discord.HTTPException, asyncio.TimeoutError) as exc:
+                    log.debug("Could not delete original thinking response: %s", exc)
+                try:
+                    sent_msg = await asyncio.wait_for(
+                        interaction.followup.send(view=view, ephemeral=True),
+                        timeout=CARD_SEND_TIMEOUT,
+                    )
+                except Exception as exc:
+                    log.debug("Failed sending ephemeral followup card: %s", exc)
+            else:
+                try:
+                    sent_msg = await asyncio.wait_for(
+                        interaction.edit_original_response(view=view),
+                        timeout=CARD_SEND_TIMEOUT,
+                    )
+                except (discord.NotFound, discord.HTTPException, asyncio.TimeoutError):
+                    sent_msg = await asyncio.wait_for(
+                        interaction.followup.send(view=view, ephemeral=ephemeral),
+                        timeout=CARD_SEND_TIMEOUT,
+                    )
 
         if isinstance(view, BaseCardView):
             if sent_msg is not None:
@@ -640,8 +659,12 @@ def build_nowplaying_container(
         f"**Requested by:** <@{requester_id}>",
         f"**Duration:** `{duration_str}`",
     ]
+    music_markup = get_emoji_markup("music")
+    state_str = "**Paused**" if is_paused else "**Playing**"
+    header_text = f"{music_markup} {state_str}" if music_markup else state_str
+
     section = Section(
-        TextDisplay(f"**{bot_name}**"),
+        TextDisplay(header_text),
         TextDisplay("\n".join(content_lines)),
         accessory=Thumbnail(art_url),
     )
@@ -663,6 +686,12 @@ class NowPlayingView(LayoutView):
         self.container: Container[Any] | None = None
         if getattr(player_ref, "current", None) is not None:
             self.render()
+
+    def stop(self) -> None:
+        """Release player reference and clear items to prevent memory leaks."""
+        self._player_ref = None
+        self.clear_items()
+        super().stop()
 
     async def _scheduled_task(self, item: Any, interaction: discord.Interaction) -> None:
         """Silent per-message button guard: while one press is running, quietly defer subsequent presses."""
@@ -779,6 +808,16 @@ class NowPlayingView(LayoutView):
             )
             return False
 
+        # Reject buttons pressed on stale card messages
+        msg = getattr(interaction, "message", None)
+        curr_msg_id = getattr(player, "nowplaying_message_id", None) or getattr(player, "_last_card_message_id", None)
+        if msg is not None and curr_msg_id is not None and msg.id != curr_msg_id:
+            if hasattr(interaction, "response") and not interaction.response.is_done():
+                await interaction.response.send_message(
+                    messages.menu_expired(), ephemeral=True, allowed_mentions=_NO_MENTIONS
+                )
+            return False
+
         member = interaction.user
         voice = getattr(member, "voice", None)
         channel = getattr(voice, "channel", None)
@@ -873,6 +912,9 @@ class NowPlayingView(LayoutView):
             import time
 
             player._last_card_edit = time.monotonic()
+            flusher = getattr(getattr(player, "services", None), "flusher", None)
+            if flusher is not None:
+                flusher.cancel(player.guild_id)
             if getattr(player, "_card_coalesce_task", None) is not None and not player._card_coalesce_task.done():
                 player._card_coalesce_task.cancel()
                 player._card_coalesce_task = None

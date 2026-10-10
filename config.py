@@ -87,6 +87,10 @@ class Config:
     mention_reply_cooldown: float = 10.0
     autocomplete_search_enabled: bool = True
     mention_reply_enabled: bool = True
+    voice_status_enabled: bool = True
+    voice_status_use_emoji: bool = True
+    user_history_enabled: bool = True
+    user_history_max: int = 50
 
     @property
     def owner_ids(self) -> tuple[int, ...]:
@@ -355,6 +359,10 @@ def load_config(env: Mapping[str, str] | None = None, dotenv_path: str | Path | 
         mention_reply_cooldown=r.number("MENTION_REPLY_COOLDOWN", 10.0, 0.0, 3600.0),
         autocomplete_search_enabled=r.boolean("AUTOCOMPLETE_SEARCH_ENABLED", True),
         mention_reply_enabled=r.boolean("MENTION_REPLY_ENABLED", True),
+        voice_status_enabled=r.boolean("VOICE_STATUS_ENABLED", True),
+        voice_status_use_emoji=r.boolean("VOICE_STATUS_USE_EMOJI", True),
+        user_history_enabled=r.boolean("USER_HISTORY_ENABLED", True),
+        user_history_max=r.integer("USER_HISTORY_MAX", 50, 1, 500),
     )
     if r.errors:
         details = "\n".join(f" - {line}" for line in r.errors)

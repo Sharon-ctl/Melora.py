@@ -92,7 +92,7 @@ class MusicBot(commands.AutoShardedBot):
             owner_id=cfg.owner_id,
             help_command=None,
             allowed_mentions=discord.AllowedMentions.none(),
-            activity=discord.Activity(type=discord.ActivityType.listening, name="/help"),
+            activity=discord.Activity(type=discord.ActivityType.listening, name="/play"),
             enable_debug_events=False,
         )
         self.cfg = cfg
@@ -110,8 +110,10 @@ class MusicBot(commands.AutoShardedBot):
         self.loader: LavalinkService
         self.backend: DiscordBackend
         self.registry: PlayerRegistry
+        self.voice_status: Any | None = None
         self._startup_done = False
         self._shutdown_started = False
+        self._shutdown_task: asyncio.Task[None] | None = None
         # Pre-cached for fast on_message hot path (set once in on_ready)
         self._bot_user_id: int = 0
         self._managed_role_ids: frozenset[int] = frozenset()
@@ -134,12 +136,18 @@ class MusicBot(commands.AutoShardedBot):
             )
         self.loader = LavalinkService(self.lavalink, cfg)
         self.backend = DiscordBackend(self, self.lavalink)
-        self.registry = PlayerRegistry(PlayerServices(cfg, self.backend, self.loader, self.storage))
+        from core.voice_status import VoiceStatusManager
+
+        self.voice_status = VoiceStatusManager(self, cfg, self.storage)
+        self.registry = PlayerRegistry(
+            PlayerServices(cfg, self.backend, self.loader, self.storage, voice_status=self.voice_status)
+        )
         self.tree.on_error = handle_app_command_error
         self.tree.interaction_check = self._tree_interaction_check
 
         self.supervisor.start("alerter", self.alerter.run)
         self.supervisor.start("ratelimit-cleanup", self.rate_limiter.cleanup_loop)
+        self.supervisor.start("voice-status-flusher", self.voice_status.run)
         for extension in EXTENSIONS:
             await self.load_extension(extension)
 
@@ -152,6 +160,7 @@ class MusicBot(commands.AutoShardedBot):
         self.supervisor.start("watchdog", self.registry.watchdog_loop)
         self.supervisor.start("heartbeat", self._heartbeat_loop)
         self.supervisor.start("daily-backup", self._daily_backup_loop)
+        self.supervisor.start("status-rotation", self._status_loop)
 
     async def _tree_interaction_check(self, interaction: discord.Interaction) -> bool:
         """Central choke point for slash commands and autocomplete rate limiting."""
@@ -239,6 +248,7 @@ class MusicBot(commands.AutoShardedBot):
             if self.user is not None:
                 self._bot_user_id = self.user.id
             self.supervisor.start("startup-sweep", self._startup_sweep, restart=False)
+            self.supervisor.start("startup-warmup", self._startup_warmup, restart=False)
 
     async def on_interaction(self, interaction: discord.Interaction) -> None:
         if interaction.type == discord.InteractionType.component:
@@ -258,8 +268,11 @@ class MusicBot(commands.AutoShardedBot):
         custom_id = str(data.get("custom_id", "")) if isinstance(data, dict) else ""
         if custom_id.startswith("np:") and interaction.guild_id and interaction.message:
             player = self.registry.get(interaction.guild_id)
-            curr_card_id = getattr(player, "_last_card_message_id", None) if player else None
-            if interaction.message.id != curr_card_id:
+            curr_card_id = (
+                getattr(player, "nowplaying_message_id", None)
+                or getattr(player, "_last_card_message_id", None)
+            ) if player else None
+            if curr_card_id is not None and interaction.message.id != curr_card_id:
                 try:
                     await interaction.message.delete()
                 except Exception as exc:
@@ -371,6 +384,60 @@ class MusicBot(commands.AutoShardedBot):
         log.exception("Unhandled exception in event %s", event_method)
 
     # -------------------------------------------------------- supervised tasks
+
+    async def _startup_warmup(self) -> None:
+        """Warm up heavy modules, storage, Lavalink, and settings cache in background."""
+        log.info("Startup warm-up initiated")
+        t0 = time.monotonic()
+
+        # 1. Pre-import heavy modules in background thread
+        def _import_heavy() -> None:
+            try:
+                import spotify_scraper  # noqa: F401
+            except Exception as exc:
+                log.debug("Warmup spotifyscraper import skipped/failed: %s", exc)
+
+        await asyncio.to_thread(_import_heavy)
+
+        # 2. Open database connection and warm storage worker
+        try:
+            await self.storage.get_guild_settings(0)
+        except Exception as exc:
+            log.debug("Warmup storage check failed: %s", exc)
+
+        # 3. Make one Lavalink REST call if available
+        try:
+            if hasattr(self, "lavalink") and self.lavalink is not None:
+                nm = getattr(self.lavalink, "node_manager", None)
+                nodes = getattr(nm, "available_nodes", []) if nm else []
+                if nodes:
+                    await asyncio.wait_for(self.lavalink.get_tracks("ytmsearch:warmup"), timeout=2.0)
+        except Exception as exc:
+            log.debug("Warmup Lavalink call skipped: %s", exc)
+
+        # 4. Warm guild settings cache for connected servers in chunks
+        chunk_size = 50
+        guild_list = list(self.guilds)
+        for i in range(0, len(guild_list), chunk_size):
+            chunk = guild_list[i : i + chunk_size]
+            for g in chunk:
+                try:
+                    await self.storage.get_guild_settings(g.id)
+                except Exception as g_exc:
+                    log.debug("Warmup guild settings %s failed: %s", g.id, g_exc)
+            await asyncio.sleep(0)  # Yield to event loop
+
+        # 5. Pre-build static cards
+        try:
+            from utils.components_v2 import build_nowplaying_action_row, build_nowplaying_container
+
+            _ = build_nowplaying_action_row(is_paused=False, has_history=False)
+            _ = build_nowplaying_container(bot_name=getattr(self.user, "name", "Melora"))
+        except Exception as exc:
+            log.debug("Warmup card pre-build failed: %s", exc)
+
+        duration = time.monotonic() - t0
+        log.info("Startup warm-up finished in %.2fs", duration)
 
     async def _startup_sweep(self) -> None:
         """Destroy players and voice presence left over from a previous process."""
@@ -486,22 +553,82 @@ class MusicBot(commands.AutoShardedBot):
                 log.warning("Daily backup failed: %s", exc)
             await asyncio.sleep(86400.0)
 
+    async def _status_loop(self) -> None:
+        await self.wait_until_ready()
+        while not self.is_closed() and not self._shutdown_started:
+            await asyncio.sleep(10.0)
+            guild_count = len(self.guilds)
+            server_str = "server" if guild_count == 1 else "servers"
+            try:
+                await self.change_presence(
+                    activity=discord.Activity(
+                        type=discord.ActivityType.listening,
+                        name=f"in {guild_count} {server_str}",
+                    )
+                )
+            except Exception as exc:
+                log.debug("Failed to update status to server count: %s", exc)
+
+            await asyncio.sleep(10.0)
+            try:
+                await self.change_presence(
+                    activity=discord.Activity(
+                        type=discord.ActivityType.listening,
+                        name="/play",
+                    )
+                )
+            except Exception as exc:
+                log.debug("Failed to update status to /play: %s", exc)
+
     async def _on_critical_task(self, name: str, failures: int, exc: BaseException) -> None:
         self.alerter.submit(f"Background task {name} keeps failing ({failures} failures): {type(exc).__name__}")
 
     # ----------------------------------------------------------------- shutdown
 
     async def close(self) -> None:
+        if self._shutdown_task is None:
+            current_task = asyncio.current_task()
+            if current_task is not None:
+                while current_task.cancelling() > 0:
+                    current_task.uncancel()
+            self._shutdown_task = asyncio.create_task(self._do_close())
+
+        try:
+            await asyncio.shield(self._shutdown_task)
+        except (Exception, asyncio.CancelledError) as exc:
+            log.debug("Shutdown task wait error: %s", exc)
+
+    async def _do_close(self) -> None:
         if not self._shutdown_started:
             self._shutdown_started = True
-            await self._graceful_shutdown()
-        await super().close()
+            try:
+                await self._graceful_shutdown()
+            except (Exception, asyncio.CancelledError) as exc:
+                log.exception("Graceful shutdown encountered an error: %s", exc)
+        try:
+            await super().close()
+        except (Exception, asyncio.CancelledError) as exc:
+            log.debug("super().close() error: %s", exc)
 
     async def _graceful_shutdown(self) -> None:
         log.info("Shutting down")
         await self._step("stop background tasks", self.supervisor.stop_all())
+
+        if not self.is_closed():
+            try:
+                await asyncio.wait_for(
+                    self.change_presence(status=discord.Status.offline),
+                    timeout=3.0,
+                )
+                log.info("Discord presence set to offline")
+            except Exception as exc:
+                log.debug("Failed setting offline presence: %s", exc)
+
         from utils.components_v2 import ACTIVE_VIEWS
         await self._step("close active views", ACTIVE_VIEWS.close_all())
+        voice_status = getattr(self, "voice_status", None)
+        if voice_status is not None:
+            await self._step("clear voice statuses", voice_status.clear_all_shutdown(timeout=5.0))
         registry = getattr(self, "registry", None)
         if registry is not None:
             registry.stop_background_tasks()
@@ -520,9 +647,11 @@ class MusicBot(commands.AutoShardedBot):
     @staticmethod
     async def _step(label: str, work: Any) -> None:
         try:
-            await asyncio.wait_for(work, timeout=SHUTDOWN_STEP_TIMEOUT)
+            await asyncio.wait_for(asyncio.shield(work), timeout=SHUTDOWN_STEP_TIMEOUT)
+        except asyncio.TimeoutError:
+            log.warning("Shutdown step timed out: %s", label)
         except asyncio.CancelledError:
-            raise
+            log.warning("Shutdown step cancelled: %s", label)
         except Exception:
             log.exception("Shutdown step failed: %s", label)
 
@@ -567,15 +696,30 @@ async def amain(cfg: Config) -> None:
     alerter = Alerter(cfg)
     install_process_handlers(loop, alerter)
     bot = MusicBot(cfg, alerter)
-    main_task = asyncio.current_task()
-    if main_task is not None:
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
-                loop.add_signal_handler(sig, main_task.cancel)
-            except (NotImplementedError, RuntimeError) as exc:
-                log.debug("Signal handler registration skipped: %s", exc)
-    async with bot:
+    shutdown_task: asyncio.Task[None] | None = None
+
+    def _trigger_shutdown() -> None:
+        nonlocal shutdown_task
+        if shutdown_task is None or shutdown_task.done():
+            shutdown_task = asyncio.create_task(bot.close())
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, _trigger_shutdown)
+        except (NotImplementedError, RuntimeError) as exc:
+            log.debug("Signal handler registration skipped: %s", exc)
+
+    try:
         await bot.start(cfg.token, reconnect=True)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        log.info("Shutdown initiated by user / signal")
+    finally:
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            while current_task.cancelling() > 0:
+                current_task.uncancel()
+        if not bot.is_closed():
+            await bot.close()
 
 
 def main() -> int:

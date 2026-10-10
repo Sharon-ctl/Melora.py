@@ -338,9 +338,6 @@ class Admin(commands.Cog):
     @app_commands.command(name="status", description="Show bot and runtime status")
     @app_commands.guild_only()
     async def status(self, interaction: discord.Interaction) -> None:
-        if not await safe_defer(interaction):
-            return
-
         stats = collect_stats(self.bot)
         latency = f"{stats.latency_ms} ms" if stats.latency_ms >= 0 else "unknown"
         uptime = format_uptime(stats.uptime_seconds)
@@ -464,6 +461,9 @@ class Admin(commands.Cog):
 
             http_429s = get_http_429_count()
             lines.append(f"**Discord 429s:** `{http_429s}`")
+            voice_status = getattr(self.bot, "voice_status", None)
+            if voice_status is not None:
+                lines.append(f"**Voice Status Lacking Perm:** `{voice_status.missing_permission_count} servers`")
 
             timing_stats = get_command_timing_stats()
             if timing_stats:
@@ -483,9 +483,6 @@ class Admin(commands.Cog):
     @app_commands.command(name="help", description="Show all available commands")
     @app_commands.guild_only()
     async def help(self, interaction: discord.Interaction) -> None:
-        if not await safe_defer(interaction):
-            return
-
         is_owner = interaction.user.id in self.bot.cfg.owner_ids
         if not is_owner:
             try:
@@ -542,11 +539,9 @@ class Admin(commands.Cog):
     @app_commands.command(name="privacy", description="Learn what data Melora stores and why")
     @app_commands.guild_only()
     async def privacy(self, interaction: discord.Interaction) -> None:
-        if not await safe_defer(interaction, ephemeral=True):
-            return
         await reply(interaction, messages.privacy_policy(), ephemeral=True)
 
-    @app_commands.command(name="reset", description="Delete all your stored data (favorites and playlists)")
+    @app_commands.command(name="reset", description="Delete all your stored data (favorites, playlists, and history)")
     @app_commands.guild_only()
     async def reset(self, interaction: discord.Interaction) -> None:
         view = ResetConfirmView(self, interaction.user.id)

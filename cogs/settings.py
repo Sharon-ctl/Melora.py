@@ -11,6 +11,7 @@ from discord.ext import commands
 from core.storage import StorageError
 from utils import messages
 from utils.checks import user_voice_channel
+from utils.components_v2 import BaseCardView, TextDisplay, create_card_container, reply_card
 from utils.errors import BotUserError, MissingVoicePermissions, StageUnsupported
 from utils.interaction import reply, safe_defer
 
@@ -42,8 +43,6 @@ class Settings(commands.Cog):
     async def settings_view(self, interaction: discord.Interaction) -> None:
         self._require_manage_guild(interaction)
         guild_id = interaction.guild_id or 0
-        if not await safe_defer(interaction, ephemeral=True):
-            return
 
         try:
             s = await self.bot.storage.get_guild_settings(guild_id)
@@ -79,8 +78,13 @@ class Settings(commands.Cog):
             messages.server_setting_row("Restricted Channel", restrict_str, is_mention=bool(s.restrict_channel_id)),
             messages.server_setting_row("24/7 Mode", voice_247_str, is_mention=bool(s.voice_247_channel_id)),
             messages.server_setting_row("Restore Queue On Restart", "Enabled" if s.restore_queue else "Disabled"),
+            messages.server_setting_row("Voice Channel Status", "Enabled" if s.voice_status_enabled else "Disabled"),
         ]
-        await reply(interaction, "\n".join(lines), ephemeral=True)
+        text_disp = TextDisplay("\n".join(lines))
+        container = create_card_container(text_disp)
+        view = BaseCardView(timeout=60.0, author_id=interaction.user.id)
+        view.add_item(container)
+        await reply_card(interaction, view, ephemeral=True)
 
     @settings_group.command(name="djrole", description="Set or clear the DJ role")
     @app_commands.describe(role="Role to set as DJ (leave empty to clear)")
@@ -88,8 +92,6 @@ class Settings(commands.Cog):
     async def settings_djrole(self, interaction: discord.Interaction, role: discord.Role | None = None) -> None:
         self._require_manage_guild(interaction)
         guild_id = interaction.guild_id or 0
-        if not await safe_defer(interaction, ephemeral=True):
-            return
 
         role_id = role.id if role else 0
         try:
@@ -110,8 +112,6 @@ class Settings(commands.Cog):
     async def settings_dj_only(self, interaction: discord.Interaction, enabled: bool) -> None:
         self._require_manage_guild(interaction)
         guild_id = interaction.guild_id or 0
-        if not await safe_defer(interaction, ephemeral=True):
-            return
 
         try:
             await self.bot.storage.update_guild_settings(guild_id, dj_only=enabled)
@@ -132,8 +132,6 @@ class Settings(commands.Cog):
     ) -> None:
         self._require_manage_guild(interaction)
         guild_id = interaction.guild_id or 0
-        if not await safe_defer(interaction, ephemeral=True):
-            return
 
         try:
             await self.bot.storage.update_guild_settings(guild_id, volume_limit=limit)
@@ -154,8 +152,6 @@ class Settings(commands.Cog):
     ) -> None:
         self._require_manage_guild(interaction)
         guild_id = interaction.guild_id or 0
-        if not await safe_defer(interaction, ephemeral=True):
-            return
 
         try:
             await self.bot.storage.update_guild_settings(guild_id, max_duration=minutes)
@@ -173,8 +169,6 @@ class Settings(commands.Cog):
     ) -> None:
         self._require_manage_guild(interaction)
         guild_id = interaction.guild_id or 0
-        if not await safe_defer(interaction, ephemeral=True):
-            return
 
         try:
             await self.bot.storage.update_guild_settings(guild_id, max_queue=count)
@@ -195,8 +189,6 @@ class Settings(commands.Cog):
     ) -> None:
         self._require_manage_guild(interaction)
         guild_id = interaction.guild_id or 0
-        if not await safe_defer(interaction, ephemeral=True):
-            return
 
         ch_id = channel.id if channel else 0
         try:
@@ -211,14 +203,38 @@ class Settings(commands.Cog):
     async def settings_restore_queue(self, interaction: discord.Interaction, enabled: bool) -> None:
         self._require_manage_guild(interaction)
         guild_id = interaction.guild_id or 0
-        if not await safe_defer(interaction, ephemeral=True):
-            return
 
         try:
             await self.bot.storage.update_guild_settings(guild_id, restore_queue=enabled)
+            player = self.bot.registry.get(guild_id)
+            if player is not None:
+                player.restore_queue_enabled = enabled
             await reply(
                 interaction,
                 messages.restore_queue_toggled(enabled),
+                ephemeral=True,
+            )
+        except StorageError:
+            await reply(interaction, messages.storage_unavailable(), ephemeral=True)
+
+    @settings_group.command(name="voice-status", description="Enable or disable voice channel status updates")
+    @app_commands.describe(enabled="Whether to show player status in the voice channel")
+    @app_commands.guild_only()
+    async def settings_voice_status(self, interaction: discord.Interaction, enabled: bool) -> None:
+        self._require_manage_guild(interaction)
+        guild_id = interaction.guild_id or 0
+
+        try:
+            await self.bot.storage.update_guild_settings(guild_id, voice_status_enabled=enabled)
+            voice_status = getattr(self.bot, "voice_status", None)
+            if voice_status is not None:
+                if not enabled:
+                    await voice_status.on_setting_disabled(guild_id)
+                else:
+                    await voice_status.on_setting_enabled(guild_id)
+            await reply(
+                interaction,
+                messages.voice_status_toggled(enabled),
                 ephemeral=True,
             )
         except StorageError:
@@ -236,8 +252,6 @@ class Settings(commands.Cog):
         self._require_manage_guild(interaction)
         guild_id = interaction.guild_id or 0
         clamped_vol = max(1, min(100, volume))
-        if not await safe_defer(interaction, ephemeral=True):
-            return
 
         try:
             await self.bot.storage.update_guild_settings(guild_id, default_volume=clamped_vol)

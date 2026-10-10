@@ -153,14 +153,34 @@ class OnCooldown(BotUserError):
 class NoMatches(BotUserError):
     default_message = messages.no_matches()
 
-    def __init__(self, message: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        cause: str | None = None,
+        severity: str | None = None,
+        source: str | None = None,
+    ) -> None:
+        self.cause = cause
+        self.severity = severity
+        self.source = source
         super().__init__(message or self.default_message)
 
 
 class LoadFailed(BotUserError):
     default_message = messages.load_failed()
 
-    def __init__(self, message: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        cause: str | None = None,
+        severity: str | None = None,
+        source: str | None = None,
+    ) -> None:
+        self.cause = cause
+        self.severity = severity
+        self.source = source
         super().__init__(message or self.default_message)
 
 

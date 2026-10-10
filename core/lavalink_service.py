@@ -101,7 +101,15 @@ class LavalinkService:
 
         loop = asyncio.get_running_loop()
         flight_fut: asyncio.Future[LoadResult] = loop.create_future()
+
+        def _consume_flight_exception(f: asyncio.Future[Any]) -> None:
+            if not f.cancelled():
+                f.exception()
+
+        flight_fut.add_done_callback(_consume_flight_exception)
         self._flight[identifier] = flight_fut
+
+        source_name = identifier.split(":", 1)[0] if ":" in identifier else "direct"
 
         try:
             try:
@@ -114,13 +122,25 @@ class LavalinkService:
                 result = await asyncio.wait_for(self._client.get_tracks(identifier), timeout=self._cfg.load_timeout)
                 # Check for load failure or empty tracks to cache negatively
                 if result.load_type == LoadType.ERROR:
-                    exc = LoadFailed()
+                    err = getattr(result, "error", None)
+                    err_msg = getattr(err, "message", None) if err else None
+                    err_sev = getattr(err, "severity", None) if err else None
+                    sev_str = str(err_sev) if err_sev is not None else None
+                    exc = LoadFailed(
+                        cause=err_msg or "Lavalink load error",
+                        severity=sev_str,
+                        source=source_name,
+                    )
                     self._negative_cache.set(identifier, exc)
                     if not flight_fut.done():
                         flight_fut.set_exception(exc)
                     raise exc
                 if result.load_type == LoadType.EMPTY or not result.tracks:
-                    exc = NoMatches()
+                    exc = NoMatches(
+                        cause="No tracks found",
+                        severity="COMMON",
+                        source=source_name,
+                    )
                     self._negative_cache.set(identifier, exc)
                     if not flight_fut.done():
                         flight_fut.set_exception(exc)
@@ -132,7 +152,12 @@ class LavalinkService:
                     flight_fut.set_result(result)
                 return result
             except (asyncio.TimeoutError, TimeoutError):
-                exc = LoadFailed("The audio server took too long to respond.")
+                exc = LoadFailed(
+                    "The audio server took too long to respond.",
+                    cause="Audio server timeout",
+                    severity="COMMON",
+                    source=source_name,
+                )
                 self._negative_cache.set(identifier, exc)
                 if not flight_fut.done():
                     flight_fut.set_exception(exc)
@@ -149,21 +174,25 @@ class LavalinkService:
                 raise exc from None
             except RequestError as req_exc:
                 log.warning("Lavalink request error while loading: %s", req_exc)
-                exc = LoadFailed()
+                exc = LoadFailed(cause=str(req_exc), severity="FAULT", source=source_name)
                 self._negative_cache.set(identifier, exc)
                 if not flight_fut.done():
                     flight_fut.set_exception(exc)
                 raise exc from None
             except (NoMatches, LoadFailed, NodeOffline):
                 raise
-            except Exception:
+            except Exception as exc_any:
                 log.exception("Unexpected error while loading tracks")
-                exc = LoadFailed()
+                exc = LoadFailed(cause=str(exc_any), severity="FAULT", source=source_name)
                 if not flight_fut.done():
                     flight_fut.set_exception(exc)
                 raise exc from None
             finally:
                 self._semaphore.release()
+        except (asyncio.CancelledError, GeneratorExit):
+            if not flight_fut.done():
+                flight_fut.cancel()
+            raise
         except Exception as e:
             if not flight_fut.done():
                 flight_fut.set_exception(e)
@@ -174,12 +203,15 @@ class LavalinkService:
     def _to_outcome(self, result: LoadResult, source: str, used_fallback: bool, query: str | None) -> LoadOutcome:
         load_type = result.load_type
         if load_type == LoadType.ERROR:
-            error = result.error
-            log.warning("Lavalink load error: %s", error)
-            raise LoadFailed()
+            error = getattr(result, "error", None)
+            err_msg = getattr(error, "message", None) if error else None
+            err_sev = getattr(error, "severity", None) if error else None
+            sev_str = str(err_sev) if err_sev is not None else None
+            log.warning("Lavalink load error with source %s: message=%s severity=%s", source, err_msg, sev_str)
+            raise LoadFailed(cause=err_msg or "Lavalink load error", severity=sev_str, source=source)
         tracks = list(result.tracks)
         if load_type == LoadType.EMPTY or not tracks:
-            raise NoMatches()
+            raise NoMatches(cause="No tracks found", severity="COMMON", source=source)
         if load_type == LoadType.PLAYLIST:
             name = clean(result.playlist_info.name) or "playlist"
             return LoadOutcome("playlist", tracks, name, source, used_fallback, query)
@@ -223,8 +255,17 @@ class LavalinkService:
                 raise
             except BotUserError as exc:
                 last_error = exc
-                log.info("Load attempt with source %s failed: %s", source, exc.message)
-        raise last_error or NoMatches()
+                if getattr(exc, "source", None) is None:
+                    exc.source = source
+                desc = "no matches found" if isinstance(exc, NoMatches) else "track loading failed"
+                details = []
+                if getattr(exc, "severity", None):
+                    details.append(f"severity={exc.severity}")
+                if getattr(exc, "cause", None):
+                    details.append(f"cause={exc.cause}")
+                details_str = f" ({', '.join(details)})" if details else ""
+                log.info("Load attempt with source %s failed: %s: %s%s", source, type(exc).__name__, desc, details_str)
+        raise last_error or NoMatches(source=attempts[-1][1] if attempts else "unknown")
 
     async def load_first_with_source(self, guild_id: int, source: str, text: str) -> Any:
         """Search one specific source and return the first track (used for start-failure fallback)."""

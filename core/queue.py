@@ -64,6 +64,7 @@ class QueueItem:
         "spotify_metadata",
         "requester_name",
         "artwork_url",
+        "from_play_command",
     )
 
     def __init__(
@@ -82,6 +83,7 @@ class QueueItem:
         requester_name: str = "",
         artwork_url: str | None = None,
         requester_avatar_url: str | None = None,
+        from_play_command: bool = False,
     ) -> None:
         self.track = track
         self.title = title
@@ -96,6 +98,7 @@ class QueueItem:
         self.spotify_metadata = spotify_metadata
         self.requester_name = requester_name
         self.artwork_url = artwork_url
+        self.from_play_command = from_play_command
         if requester_avatar_url:
             _AVATAR_CACHE.set(requester_id, requester_avatar_url)
 

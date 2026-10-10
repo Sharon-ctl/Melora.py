@@ -98,6 +98,11 @@ class GuildPlayer:
         self._card_coalesce_task: asyncio.Task[Any] | None = None
         self._prefetch_task: asyncio.Task[Any] | None = None
 
+    @property
+    def _last_card_message_id(self) -> int | None:
+        """Alias for nowplaying_message_id for component guard consistency."""
+        return self.nowplaying_message_id
+
     def cancel_prefetch(self) -> None:
         """Cancel any running background prefetch task."""
         if self._prefetch_task is not None:
@@ -199,6 +204,8 @@ class GuildPlayer:
                     log.debug("guild=%s card edit failed, will recreate", self.guild_id)
 
             # Send a new card
+            if self.destroyed or self.current is None:
+                return
             if self.nowplaying_view is not None:
                 self.nowplaying_view.stop()
             self.nowplaying_view = NowPlayingView(self)
@@ -267,11 +274,10 @@ class GuildPlayer:
         if task is not None:
             self._timers["snapshot"] = task
 
-    async def _debounced_snapshot(self, delay: float = 5.0) -> None:
-        await asyncio.sleep(delay)
-        self._timers.pop("snapshot", None)
+    async def save_snapshot_now(self) -> None:
+        """Immediately save queue snapshot to storage without debouncing."""
         storage = getattr(self.services, "storage", None)
-        if self.destroyed or storage is None:
+        if storage is None:
             return
         tracks: list[StoredTrack] = []
         if self.current is not None:
@@ -294,10 +300,19 @@ class GuildPlayer:
                     requester_id=item.requester_id,
                 )
             )
-        try:
-            await storage.save_queue_snapshot(self.guild_id, tracks)
-        except Exception as exc:
-            log.debug("guild=%s failed to save queue snapshot: %s", self.guild_id, exc)
+        if tracks:
+            try:
+                await storage.save_queue_snapshot(self.guild_id, tracks)
+                log.info("guild=%s saved queue snapshot (%d tracks)", self.guild_id, len(tracks))
+            except Exception as exc:
+                log.debug("guild=%s failed to save queue snapshot: %s", self.guild_id, exc)
+
+    async def _debounced_snapshot(self, delay: float = 5.0) -> None:
+        await asyncio.sleep(delay)
+        self._timers.pop("snapshot", None)
+        if self.destroyed:
+            return
+        await self.save_snapshot_now()
 
     # ------------------------------------------------------------------- timers
 
@@ -358,6 +373,9 @@ class GuildPlayer:
         self.paused_since = None
         self.paused = False
         self._schedule_preload_next()
+        vs = getattr(self.services, "voice_status", None)
+        if vs is not None:
+            vs.on_track_start(self.guild_id, self)
 
     def is_overdue(self) -> bool:
         """True if the current track has run far longer than its length (a missed end event)."""
@@ -441,6 +459,9 @@ class GuildPlayer:
             self.start_timer("idle", self.cfg.idle_timeout, "idle")
             self.schedule_snapshot()
             self.tasks.spawn(self.delete_card(), name="card-delete")
+            vs = getattr(self.services, "voice_status", None)
+            if vs is not None:
+                vs.on_queue_ended(self.guild_id, self)
             return False
         started = await self._play_item_locked(item)
         self.schedule_snapshot()
@@ -483,6 +504,7 @@ class GuildPlayer:
                     )
                     return await self._advance_locked(skipped=True)
                 item.replace_track(resolved)
+                self._record_resolved_history(item)
             elif item.uri or item.query:
                 load_target = item.uri or item.query or ""
                 try:
@@ -545,6 +567,7 @@ class GuildPlayer:
                 )
                 if resolved is not None and item.track is None:
                     item.replace_track(resolved)
+                    self._record_resolved_history(item)
             elif item.uri or item.query:
                 load_target = item.uri or item.query or ""
                 outcome = await self.services.loader.load(self.guild_id, load_target)
@@ -554,6 +577,22 @@ class GuildPlayer:
             raise
         except Exception as exc:
             log.debug("guild=%s preload next track failed: %s", self.guild_id, exc)
+
+    def _record_resolved_history(self, item: Any) -> None:
+        if getattr(item, "from_play_command", False) and self.services.storage:
+            item.from_play_command = False
+            cfg = self.services.cfg
+            if getattr(cfg, "user_history_enabled", True):
+                max_h = getattr(cfg, "user_history_max", 50)
+                asyncio.create_task(
+                    self.services.storage.record_user_play_history(
+                        item.requester_id,
+                        item.title,
+                        item.artist or "",
+                        item.uri or "",
+                        max_entries=max_h,
+                    )
+                )
 
     async def _preload_next(self) -> None:
         """Pre-fetch and resolve up to 2 upcoming tracks in background using asyncio.gather."""
@@ -582,7 +621,8 @@ class GuildPlayer:
         except asyncio.CancelledError:
             raise
         except BotUserError as exc:
-            log.info("guild=%s fallback search failed: %s", self.guild_id, exc.message)
+            desc = "load failed" if "LoadFailed" in type(exc).__name__ else "no matches"
+            log.info("guild=%s fallback search failed: %s: %s", self.guild_id, type(exc).__name__, desc)
         except Exception:
             log.exception("guild=%s fallback search crashed", self.guild_id)
         return None
@@ -692,6 +732,8 @@ class GuildPlayer:
 
     async def skip(self) -> QueueItem:
         async with self.lock:
+            if self.destroyed:
+                raise BotUserError("The player was closed. Try again.")
             item = self.current
             if item is None:
                 raise NothingPlaying()
@@ -709,10 +751,15 @@ class GuildPlayer:
             await self._stop_audio_locked()
             self.start_timer("idle", self.cfg.idle_timeout, "idle")
             self.schedule_snapshot()
+            vs = getattr(self.services, "voice_status", None)
+            if vs is not None:
+                vs.on_queue_ended(self.guild_id, self)
         await self.delete_card()
 
     async def pause(self) -> None:
         async with self.lock:
+            if self.destroyed:
+                raise BotUserError("The player was closed. Try again.")
             if self.current is None:
                 raise NothingPlaying()
             if self.paused:
@@ -722,9 +769,14 @@ class GuildPlayer:
             self.paused_since = time.monotonic()
             self.start_timer("idle", self.cfg.idle_timeout, "idle")
         self.schedule_card_update()
+        vs = getattr(self.services, "voice_status", None)
+        if vs is not None:
+            vs.on_pause(self.guild_id, self)
 
     async def resume(self) -> None:
         async with self.lock:
+            if self.destroyed:
+                raise BotUserError("The player was closed. Try again.")
             if self.current is None:
                 raise NothingPlaying()
             if not self.paused:
@@ -736,6 +788,9 @@ class GuildPlayer:
                 self.paused_since = None
             self.cancel_timer("idle")
         self.schedule_card_update()
+        vs = getattr(self.services, "voice_status", None)
+        if vs is not None:
+            vs.on_resume(self.guild_id, self)
 
     async def set_volume(self, level: int) -> int:
         async with self.lock:
@@ -787,6 +842,8 @@ class GuildPlayer:
 
     async def replay(self) -> None:
         async with self.lock:
+            if self.destroyed:
+                raise BotUserError("The player was closed. Try again.")
             if self.current is None:
                 raise NothingPlaying()
             if self.current.is_stream:
@@ -797,6 +854,8 @@ class GuildPlayer:
 
     async def previous(self) -> QueueItem:
         async with self.lock:
+            if self.destroyed:
+                raise BotUserError("The player was closed. Try again.")
             prev = self.queue.pop_history()
             if prev is None:
                 raise BotUserError("No previous tracks in history.")
@@ -819,6 +878,8 @@ class GuildPlayer:
 
     async def seek(self, seconds: int) -> None:
         async with self.lock:
+            if self.destroyed:
+                raise BotUserError("The player was closed. Try again.")
             if self.current is None:
                 raise NothingPlaying()
             if self.current.is_stream:
@@ -916,6 +977,8 @@ class GuildPlayer:
 
     async def vote_skip(self, user_id: int, humans_count: int) -> tuple[bool, int, int]:
         async with self.lock:
+            if self.destroyed:
+                raise BotUserError("The player was closed. Try again.")
             if self.current is None:
                 raise NothingPlaying()
             if len(self.votes) == 0:

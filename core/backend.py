@@ -153,8 +153,14 @@ class DiscordBackend:
 
     async def purge(self, guild_id: int) -> None:
         """Destroy the Lavalink player and disconnect voice. Idempotent, never raises."""
-        await self._destroy_audio(guild_id)
-        await self._disconnect_voice(guild_id)
+        try:
+            await self._destroy_audio(guild_id)
+        except (Exception, asyncio.CancelledError) as exc:
+            log.debug("guild=%s destroy audio error during purge: %s", guild_id, exc)
+        try:
+            await self._disconnect_voice(guild_id)
+        except (Exception, asyncio.CancelledError) as exc:
+            log.debug("guild=%s disconnect voice error during purge: %s", guild_id, exc)
 
     async def _destroy_audio(self, guild_id: int) -> None:
         manager = self._ll.player_manager
@@ -168,7 +174,6 @@ class DiscordBackend:
                 manager.remove(guild_id)
         except asyncio.CancelledError:
             manager.remove(guild_id)
-            raise
         except Exception as exc:
             log.warning("guild=%s lavalink player destroy failed: %s", guild_id, type(exc).__name__)
         finally:
