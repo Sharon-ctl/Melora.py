@@ -471,30 +471,21 @@ async def reply_card(
                     log.debug("Failed to store message on card view: %s", exc)
         else:
             # If already deferred:
-            thinking = bool(getattr(interaction, "extras", {}).pop("public_deferred", False))
-            if ephemeral and thinking:
+            getattr(interaction, "extras", {}).pop("public_deferred", None)
+            try:
+                sent_msg = await asyncio.wait_for(
+                    interaction.edit_original_response(view=view),
+                    timeout=CARD_SEND_TIMEOUT,
+                )
+            except (discord.NotFound, discord.HTTPException, asyncio.TimeoutError) as exc:
+                log.debug("Could not edit original card response: %s; falling back to followup", exc)
                 try:
-                    await asyncio.wait_for(interaction.delete_original_response(), timeout=CARD_SEND_TIMEOUT)
-                except (discord.NotFound, discord.HTTPException, asyncio.TimeoutError) as exc:
-                    log.debug("Could not delete original thinking response: %s", exc)
-                try:
-                    sent_msg = await asyncio.wait_for(
-                        interaction.followup.send(view=view, ephemeral=True),
-                        timeout=CARD_SEND_TIMEOUT,
-                    )
-                except Exception as exc:
-                    log.debug("Failed sending ephemeral followup card: %s", exc)
-            else:
-                try:
-                    sent_msg = await asyncio.wait_for(
-                        interaction.edit_original_response(view=view),
-                        timeout=CARD_SEND_TIMEOUT,
-                    )
-                except (discord.NotFound, discord.HTTPException, asyncio.TimeoutError):
                     sent_msg = await asyncio.wait_for(
                         interaction.followup.send(view=view, ephemeral=ephemeral),
                         timeout=CARD_SEND_TIMEOUT,
                     )
+                except Exception as followup_exc:
+                    log.debug("Failed sending followup card: %s", followup_exc)
 
         if isinstance(view, BaseCardView):
             if sent_msg is not None:

@@ -81,7 +81,7 @@ class Config:
     max_playlists_per_user: int = 0
     max_tracks_per_playlist: int = 0
     history_size: int = 50
-    autoplay_batch_size: int = 5
+    autoplay_batch_size: int = 1
     backup_count: int = 7
     db_path: str = "data/bot.db"
     mention_reply_cooldown: float = 10.0
@@ -353,7 +353,7 @@ def load_config(env: Mapping[str, str] | None = None, dotenv_path: str | Path | 
         max_playlists_per_user=r.integer("MAX_PLAYLISTS_PER_USER", 0, 0, 500000),
         max_tracks_per_playlist=r.integer("MAX_TRACKS_PER_PLAYLIST", 0, 0, 500000),
         history_size=r.integer("HISTORY_SIZE", 50, 5, 500),
-        autoplay_batch_size=r.integer("AUTOPLAY_BATCH_SIZE", 5, 1, 25),
+        autoplay_batch_size=r.integer("AUTOPLAY_BATCH_SIZE", 1, 1, 25),
         backup_count=r.integer("BACKUP_COUNT", 7, 1, 100),
         db_path=r.text("DB_PATH", "data/bot.db"),
         mention_reply_cooldown=r.number("MENTION_REPLY_COOLDOWN", 10.0, 0.0, 3600.0),

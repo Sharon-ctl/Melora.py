@@ -100,7 +100,7 @@ class Library(commands.Cog):
             and existing.voice_channel_id != channel.id
             and self.bot.backend.voice_connected(guild.id, existing.voice_channel_id)
         ):
-            raise WrongChannel()
+            raise WrongChannel(channel_id=existing.voice_channel_id)
         check_bot_channel_permissions(interaction, voice_channel=channel)
         return interaction.user, channel
 

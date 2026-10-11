@@ -282,11 +282,9 @@ def test_smooth_playback_and_speed_controls():
         audio = backend.audio(1)
         assert audio is not None
 
-        # 1. Preprocess audio applies smooth playback timescale by default (speed 0.98)
+        # 1. Preprocess audio maintains natural 1.0x playback by default without artificial timescale filter
         await player._preprocess_audio_locked(audio)
-        assert hasattr(audio, "filters")
-        assert "timescale" in audio.filters
-        assert audio.filters["timescale"].values["speed"] == 0.98
+        assert not hasattr(audio, "filters") or "timescale" not in getattr(audio, "filters", {})
 
         # 2. Custom speed setting
         await player.set_speed(0.95)
@@ -724,6 +722,200 @@ def test_player_save_snapshot_now():
         assert tracks[1].title == "Queued Song"
 
     asyncio.run(scenario())
+
+
+def test_wrong_channel_preserves_channel_id_and_mentions_vc():
+    from utils import messages
+    from utils.errors import WrongChannel
+
+    err_with_channel = WrongChannel(channel_id=987654321)
+    assert err_with_channel.channel_id == 987654321
+    assert "<#987654321>" in err_with_channel.message
+    assert err_with_channel.message == messages.wrong_channel(987654321)
+
+    err_generic = WrongChannel()
+    assert err_generic.channel_id is None
+    assert "Join the bot voice channel" in err_generic.message
+    assert err_generic.message == messages.wrong_channel()
+
+
+def test_calling_command_fails_fast_without_deferral_on_wrong_vc():
+    async def scenario():
+        import discord
+        from cogs.music import Music
+        from utils.errors import WrongChannel
+
+        cfg = make_config()
+        bot = MagicMock()
+        bot.cfg = cfg
+
+        # Existing player in voice channel 111
+        existing_player = MagicMock()
+        existing_player.voice_channel_id = 111
+        bot.registry.get.return_value = existing_player
+        bot.backend.voice_connected.return_value = True
+
+        cog = Music(bot)
+
+        # User is in voice channel 222
+        user_vc = MagicMock(spec=discord.VoiceChannel)
+        user_vc.id = 222
+        user_vc.guild.id = 999
+
+        me = MagicMock(spec=discord.Member)
+        perms = discord.Permissions(connect=True, speak=True, view_channel=True)
+        user_vc.permissions_for.return_value = perms
+
+        member = MagicMock(spec=discord.Member)
+        member.voice = MagicMock()
+        member.voice.channel = user_vc
+
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.guild = MagicMock()
+        interaction.guild.id = 999
+        interaction.guild.me = me
+        interaction.guild_id = 999
+        interaction.user = member
+        interaction.response = MagicMock()
+        interaction.response.is_done.return_value = False
+        interaction.extras = {}
+
+        mock_defer = AsyncMock(return_value=True)
+
+        with (
+            patch("cogs.music.guild_member", return_value=member),
+            patch("cogs.music.user_voice_channel", return_value=user_vc),
+            patch("cogs.music.safe_defer", mock_defer),
+        ):
+            with pytest.raises(WrongChannel) as exc_info:
+                await cog.play.callback(cog, interaction, "test query")
+
+            # Must fail BEFORE safe_defer is ever called
+            assert mock_defer.call_count == 0
+            # Must point to the existing player channel (111)
+            assert exc_info.value.channel_id == 111
+            assert "<#111>" in exc_info.value.message
+
+    asyncio.run(scenario())
+
+
+def test_reply_edits_original_response_when_already_deferred():
+    async def scenario():
+        import discord
+        from utils.interaction import reply
+
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = MagicMock()
+        interaction.response.is_done.return_value = True
+        interaction.is_expired.return_value = False
+        interaction.extras = {"public_deferred": True}
+        interaction.edit_original_response = AsyncMock()
+        interaction.followup = MagicMock()
+        interaction.followup.send = AsyncMock()
+
+        success = await reply(interaction, "Single line error message", ephemeral=True)
+
+        assert success is True
+        # Must edit the original thinking response instead of attempting followup
+        interaction.edit_original_response.assert_awaited_once()
+        assert interaction.edit_original_response.await_args.kwargs.get("content") == "Single line error message"
+        interaction.followup.send.assert_not_called()
+        assert "public_deferred" not in interaction.extras
+
+    asyncio.run(scenario())
+
+
+def test_autoplay_queues_single_track_near_end_and_yields_to_user():
+    async def scenario():
+        from core.guild_player import GuildPlayer
+        from core.queue import QueueItem
+        from tests.fakes import FakeBackend, FakeLoader
+
+        class OneTrackLoader(FakeLoader):
+            async def load(self, gid: int, query: str):
+                tracks = [make_track(555, title="Autoplay Near End Song")]
+                from types import SimpleNamespace
+                return SimpleNamespace(tracks=tracks, kind="search")
+
+        cfg = make_config()
+        backend = FakeBackend()
+        await backend.connect(1001, 10)
+        loader = OneTrackLoader()
+        services = PlayerServices(cfg, backend, loader)
+        player = GuildPlayer(1001, 10, 20, services)
+        player.set_autoplay(True)
+
+        # 1. Start a track with 20 seconds duration
+        track_playing = QueueItem.from_track(make_track(1, duration_ms=20000, title="Playing Song"), 42)
+        await player.enqueue([track_playing])
+        assert player.current is not None
+        assert player.current.title == "Playing Song"
+        assert len(player.queue) == 0
+
+        # Trigger the near-end worker directly with 0 wait time
+        await player._autoplay_near_end_worker(0.0, track_playing)
+
+        # Exactly 1 track is queued by autoplay (not a batch of 5)
+        assert len(player.queue) == 1
+        auto_item = player.queue[0]
+        assert auto_item.title == "Autoplay Near End Song"
+        assert auto_item.is_autoplay is True
+
+        # 2. When a user enqueues a track, the speculative autoplay track is removed
+        user_track = QueueItem.from_track(make_track(777, title="User Song"), 99)
+        res = await player.enqueue([user_track])
+        assert res.added == 1
+        # Queue contains only the user track at position 1, not after the autoplay song!
+        assert len(player.queue) == 1
+        assert player.queue[0].title == "User Song"
+        assert player.queue[0].is_autoplay is False
+
+        # 3. Autoplay worker will not add another track when queue has user tracks
+        await player._autoplay_near_end_worker(0.0, track_playing)
+        assert len(player.queue) == 1
+        assert player.queue[0].title == "User Song"
+
+        player.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_queued_track_starts_without_speedup_timescale_filter():
+    async def scenario():
+        from core.guild_player import GuildPlayer
+        from core.queue import QueueItem
+        from tests.fakes import FakeBackend, FakeLoader
+
+        cfg = make_config()
+        backend = FakeBackend()
+        await backend.connect(1002, 10)
+        loader = FakeLoader()
+        services = PlayerServices(cfg, backend, loader)
+        player = GuildPlayer(1002, 10, 20, services)
+
+        t1 = QueueItem.from_track(make_track(1, title="Song 1"), 1)
+        t2 = QueueItem.from_track(make_track(2, title="Song 2"), 1)
+        await player.enqueue([t1, t2])
+
+        # Track 1 is playing
+        assert player.current.title == "Song 1"
+        audio = backend.audio(1002)
+        assert audio is not None
+        # No timescale filter on track 1
+        assert not hasattr(audio, "filters") or "timescale" not in getattr(audio, "filters", {})
+
+        # Track 1 ends, track 2 starts from queue
+        await player.on_track_end(player.current.track.track, "finished")
+        assert player.current.title == "Song 2"
+
+        # Track 2 must also start cleanly with no timescale filter (no speedup / instability)
+        assert not hasattr(audio, "filters") or "timescale" not in getattr(audio, "filters", {})
+
+        player.shutdown()
+
+    asyncio.run(scenario())
+
+
 
 
 

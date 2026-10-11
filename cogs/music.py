@@ -161,7 +161,7 @@ class Music(commands.Cog):
         if voice is None or voice.channel is None:
             raise NotInVoice()
         if voice.channel.id != player.voice_channel_id:
-            raise WrongChannel()
+            raise WrongChannel(channel_id=player.voice_channel_id)
         effective_dj = dj or getattr(player, "dj_only", False)
         if effective_dj:
             require_dj(
@@ -277,7 +277,7 @@ class Music(commands.Cog):
             and existing.voice_channel_id != channel.id
             and self.bot.backend.voice_connected(guild.id, existing.voice_channel_id)
         ):
-            raise WrongChannel()
+            raise WrongChannel(channel_id=existing.voice_channel_id)
         check_bot_channel_permissions(interaction, voice_channel=channel)
         return member, channel
 
@@ -287,10 +287,10 @@ class Music(commands.Cog):
     @app_commands.describe(query="A link or search text")
     @app_commands.guild_only()
     async def play(self, interaction: discord.Interaction, query: app_commands.Range[str, 1, 200]) -> None:
+        member, channel = await self._resolve_voice_channel(interaction)
         if not await safe_defer(interaction):
             return
 
-        member, channel = await self._resolve_voice_channel(interaction)
         guild_id = interaction.guild_id or 0
         avatar_url = extract_user_avatar_url(member)
 
@@ -311,7 +311,7 @@ class Music(commands.Cog):
         if voice is None or voice.channel is None or voice.channel.id != channel.id:
             raise NotInVoice()
         if player.voice_channel_id != channel.id:
-            raise WrongChannel()
+            raise WrongChannel(channel_id=player.voice_channel_id)
         total_skipped = skipped
         if coll_name is not None and len(items) > 200:
             CHUNK_SIZE = 200
@@ -377,10 +377,10 @@ class Music(commands.Cog):
         query: app_commands.Range[str, 1, 200],
         position: app_commands.Range[int, 1, 100000] = 1,
     ) -> None:
+        member, channel = await self._resolve_voice_channel(interaction)
         if not await safe_defer(interaction):
             return
 
-        member, channel = await self._resolve_voice_channel(interaction)
         guild_id = interaction.guild_id or 0
         avatar_url = extract_user_avatar_url(member)
         items, _, _, _ = await self._load_query_items(query, member.id, guild_id, requester_avatar_url=avatar_url)
@@ -396,10 +396,10 @@ class Music(commands.Cog):
     @app_commands.describe(query="A link or search text")
     @app_commands.guild_only()
     async def playnext(self, interaction: discord.Interaction, query: app_commands.Range[str, 1, 200]) -> None:
+        member, channel = await self._resolve_voice_channel(interaction)
         if not await safe_defer(interaction):
             return
 
-        member, channel = await self._resolve_voice_channel(interaction)
         guild_id = interaction.guild_id or 0
         avatar_url = extract_user_avatar_url(member)
         items, _, _, _ = await self._load_query_items(query, member.id, guild_id, requester_avatar_url=avatar_url)
@@ -415,10 +415,10 @@ class Music(commands.Cog):
     @app_commands.describe(query="A link or search text")
     @app_commands.guild_only()
     async def playinstant(self, interaction: discord.Interaction, query: app_commands.Range[str, 1, 200]) -> None:
+        member, channel = await self._resolve_voice_channel(interaction)
         if not await safe_defer(interaction):
             return
 
-        member, channel = await self._resolve_voice_channel(interaction)
         guild_id = interaction.guild_id or 0
         avatar_url = extract_user_avatar_url(member)
         items, _, _, _ = await self._load_query_items(query, member.id, guild_id, requester_avatar_url=avatar_url)
@@ -723,10 +723,9 @@ class Music(commands.Cog):
     @app_commands.describe(query="Search text")
     @app_commands.guild_only()
     async def search(self, interaction: discord.Interaction, query: app_commands.Range[str, 1, 200]) -> None:
+        member, channel = await self._resolve_voice_channel(interaction)
         if not await safe_defer(interaction):
             return
-
-        member, channel = await self._resolve_voice_channel(interaction)
 
         outcome = await self.bot.loader.load(interaction.guild_id or 0, query)
         tracks = outcome.tracks[:5]

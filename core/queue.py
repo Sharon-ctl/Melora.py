@@ -65,6 +65,7 @@ class QueueItem:
         "requester_name",
         "artwork_url",
         "from_play_command",
+        "is_autoplay",
     )
 
     def __init__(
@@ -84,6 +85,7 @@ class QueueItem:
         artwork_url: str | None = None,
         requester_avatar_url: str | None = None,
         from_play_command: bool = False,
+        is_autoplay: bool = False,
     ) -> None:
         self.track = track
         self.title = title
@@ -99,6 +101,7 @@ class QueueItem:
         self.requester_name = requester_name
         self.artwork_url = artwork_url
         self.from_play_command = from_play_command
+        self.is_autoplay = is_autoplay
         if requester_avatar_url:
             _AVATAR_CACHE.set(requester_id, requester_avatar_url)
 
@@ -128,6 +131,7 @@ class QueueItem:
         requester_name: str = "",
         artwork_url: str | None = None,
         requester_avatar_url: str | None = None,
+        is_autoplay: bool = False,
     ) -> QueueItem:
         art = getattr(track, "artwork_url", None) or getattr(track, "artworkUrl", None) or artwork_url
         return cls(
@@ -143,6 +147,7 @@ class QueueItem:
             requester_name=requester_name,
             artwork_url=art,
             requester_avatar_url=requester_avatar_url,
+            is_autoplay=is_autoplay,
         )
 
     @classmethod
@@ -318,6 +323,23 @@ class TrackQueue:
         item = self._items.popleft()
         self._release(item)
         return item
+
+    def remove_autoplay_items(self) -> list[QueueItem]:
+        """Remove and return any items in the upcoming queue that were added by autoplay."""
+        removed: list[QueueItem] = []
+        new_items: deque[QueueItem] = deque()
+        for item in self._items:
+            if getattr(item, "is_autoplay", False):
+                self._release(item)
+                removed.append(item)
+            else:
+                new_items.append(item)
+        self._items = new_items
+        return removed
+
+    def has_user_items(self) -> bool:
+        """Return True if there is at least one non-autoplay item in the upcoming queue."""
+        return any(not getattr(item, "is_autoplay", False) for item in self._items)
 
     def remove_many(self, position: int, count: int = 1) -> list[QueueItem]:
         """Remove count tracks starting from 1-based position. Raises IndexError if position invalid."""

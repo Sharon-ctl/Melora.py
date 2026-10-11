@@ -88,6 +88,7 @@ class WrongChannel(BotUserError):
     default_message = messages.wrong_channel()
 
     def __init__(self, message: str | None = None, channel_id: int | None = None) -> None:
+        self.channel_id = channel_id
         super().__init__(message or (messages.wrong_channel(channel_id) if channel_id else self.default_message))
 
 

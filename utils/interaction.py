@@ -123,20 +123,21 @@ async def reply(
                 else:
                     raise
 
-        thinking = bool(interaction.extras.pop(_PUBLIC_DEFERRED, False))
-        if ephemeral and thinking:
-            try:
-                await asyncio.wait_for(interaction.delete_original_response(), timeout=SEND_TIMEOUT)
-            except (discord.NotFound, discord.HTTPException, asyncio.TimeoutError) as exc:
-                log.debug("Could not delete original thinking response: %s", exc)
-                try:
-                    await asyncio.wait_for(
-                        interaction.edit_original_response(content=content, view=view),
-                        timeout=SEND_TIMEOUT,
-                    )
-                    return True
-                except (discord.NotFound, discord.HTTPException, asyncio.TimeoutError) as edit_exc:
-                    log.debug("Could not edit original thinking response: %s", edit_exc)
+        interaction.extras.pop(_PUBLIC_DEFERRED, None)
+        edit_kwargs: dict[str, Any] = {"allowed_mentions": _NO_MENTIONS}
+        if content:
+            edit_kwargs["content"] = content
+        if view is not None:
+            edit_kwargs["view"] = view
+
+        try:
+            await asyncio.wait_for(
+                interaction.edit_original_response(**edit_kwargs),
+                timeout=SEND_TIMEOUT,
+            )
+            return True
+        except (discord.NotFound, discord.HTTPException, asyncio.TimeoutError) as edit_exc:
+            log.debug("Could not edit original response: %s; falling back to followup", edit_exc)
 
         await asyncio.wait_for(
             interaction.followup.send(**kwargs),

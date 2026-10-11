@@ -65,7 +65,7 @@ class Filters(commands.Cog):
         if voice is None or voice.channel is None:
             raise NotInVoice()
         if voice.channel.id != player.voice_channel_id:
-            raise WrongChannel()
+            raise WrongChannel(channel_id=player.voice_channel_id)
         effective_dj = dj or getattr(player, "dj_only", False)
         if effective_dj:
             require_dj(

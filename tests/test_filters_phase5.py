@@ -240,11 +240,10 @@ async def test_autoplay_populates_batch_into_queue(services: PlayerServices):
     last_track = QueueItem.from_track(make_track(99, title="Initial Song"), 42)
     result = await player._try_autoplay_locked(last_track)
     assert result is True
-    # 1 track started playing, 4 tracks remain in queue (batch of 5)
+    # Exactly 1 track started playing, queue remains clean (0 extra tracks enqueued)
     assert player.current is not None
     assert player.current.title == "Autoplay Track 1"
-    assert len(player.queue) == 4
-    assert [item.title for item in player.queue] == [f"Autoplay Track {i}" for i in range(2, 6)]
+    assert len(player.queue) == 0
     player.shutdown()
 
 

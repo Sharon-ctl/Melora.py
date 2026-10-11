@@ -88,7 +88,7 @@ class GuildPlayer:
         self.current_eq: str | None = None
         self.dj_role_id: int = 0
         self.dj_only: bool = False
-        self.smooth_playback: bool = True
+        self.smooth_playback: bool = False
         # Now playing card state (IDs only, never Discord objects)
         self.nowplaying_channel_id: int | None = None
         self.nowplaying_message_id: int | None = None
@@ -97,6 +97,7 @@ class GuildPlayer:
         self._last_card_edit: float = 0.0
         self._card_coalesce_task: asyncio.Task[Any] | None = None
         self._prefetch_task: asyncio.Task[Any] | None = None
+        self._autoplay_task: asyncio.Task[Any] | None = None
 
     @property
     def _last_card_message_id(self) -> int | None:
@@ -109,6 +110,13 @@ class GuildPlayer:
             if not self._prefetch_task.done():
                 self._prefetch_task.cancel()
             self._prefetch_task = None
+
+    def cancel_autoplay(self) -> None:
+        """Cancel any running background autoplay near-end worker task."""
+        if self._autoplay_task is not None:
+            if not self._autoplay_task.done():
+                self._autoplay_task.cancel()
+            self._autoplay_task = None
 
     # ------------------------------------------------------------------ helpers
 
@@ -373,6 +381,7 @@ class GuildPlayer:
         self.paused_since = None
         self.paused = False
         self._schedule_preload_next()
+        self._schedule_autoplay_near_end()
         vs = getattr(self.services, "voice_status", None)
         if vs is not None:
             vs.on_track_start(self.guild_id, self)
@@ -398,8 +407,78 @@ class GuildPlayer:
         except Exception as exc:
             log.debug("guild=%s could not clear audio.current: %s", self.guild_id, exc)
 
+    def _schedule_autoplay_near_end(self) -> None:
+        """Schedule pre-queuing a single autoplay song when current song is near its end."""
+        self.cancel_autoplay()
+        if not self.autoplay or self.destroyed or self.current is None:
+            return
+        if self.current.is_stream or self.current.duration_ms <= 0:
+            return
+        if len(self.queue) > 0 and self.queue.has_user_items():
+            return
+        duration_sec = self.current.duration_ms / 1000.0
+        lead_time = 10.0 if duration_sec > 15.0 else 2.0
+        wait_time = max(0.5, duration_sec - lead_time)
+        task = self.tasks.spawn(
+            self._autoplay_near_end_worker(wait_time, self.current),
+            name="autoplay-near-end",
+        )
+        if task is not None:
+            self._autoplay_task = task
+
+    async def _autoplay_near_end_worker(self, wait_time: float, expected_item: QueueItem) -> None:
+        try:
+            await asyncio.sleep(wait_time)
+            async with self.lock:
+                if self.destroyed or not self.autoplay or self.current is not expected_item:
+                    return
+                if len(self.queue) > 0 and self.queue.has_user_items():
+                    return
+                if any(getattr(item, "is_autoplay", False) for item in self.queue):
+                    return
+                search_query = expected_item.artist or expected_item.title
+                if not search_query:
+                    return
+                outcome = await self.services.loader.load(self.guild_id, search_query)
+                seen = {clean_track_title(h.title).lower() for h in self.queue.get_history(50)}
+                seen.add(clean_track_title(expected_item.title).lower())
+                for item in self.queue:
+                    seen.add(clean_track_title(item.title).lower())
+
+                bot_avatar = (
+                    self.services.backend.bot_avatar_url()
+                    if hasattr(self.services.backend, "bot_avatar_url")
+                    else None
+                )
+                bot_id = self.services.backend.bot_id() if hasattr(self.services.backend, "bot_id") else 0
+                req_id = expected_item.requester_id if expected_item.requester_id else bot_id
+                req_avatar = expected_item.requester_avatar_url or bot_avatar
+
+                for t in outcome.tracks:
+                    t_title = clean_track_title(getattr(t, "title", "") or "")
+                    if t_title.lower() not in seen:
+                        try:
+                            validate_track(t, self.cfg.max_track_seconds)
+                            auto_item = QueueItem.from_track(
+                                t, req_id, requester_avatar_url=req_avatar, is_autoplay=True
+                            )
+                            if len(self.queue) == 0 or not self.queue.has_user_items():
+                                self.queue.remove_autoplay_items()
+                                self.queue.add(auto_item)
+                                self.schedule_snapshot()
+                                self.schedule_card_update()
+                            break
+                        except TrackTooLong:
+                            continue
+        except asyncio.CancelledError:
+            log.debug("guild=%s autoplay near-end worker cancelled", self.guild_id)
+        except Exception as exc:
+            log.debug("guild=%s autoplay near-end worker failed: %s", self.guild_id, exc)
+
     async def _try_autoplay_locked(self, last_track: QueueItem | None) -> bool:
         if not self.autoplay or self.autoplay_failures >= 3:
+            return False
+        if len(self.queue) > 0 and self.queue.has_user_items():
             return False
         search_query = ""
         if last_track is not None:
@@ -414,31 +493,36 @@ class GuildPlayer:
             for item in self.queue:
                 seen.add(clean_track_title(item.title).lower())
 
-            added_items: list[QueueItem] = []
-            bot_avatar = self.services.backend.bot_avatar_url() if hasattr(self.services.backend, "bot_avatar_url") else None
+            bot_avatar = (
+                self.services.backend.bot_avatar_url()
+                if hasattr(self.services.backend, "bot_avatar_url")
+                else None
+            )
             bot_id = self.services.backend.bot_id() if hasattr(self.services.backend, "bot_id") else 0
             requester_id = last_track.requester_id if last_track and last_track.requester_id else bot_id
             last_avatar = last_track.requester_avatar_url if last_track else None
             requester_avatar = last_avatar or bot_avatar
+
+            candidate: QueueItem | None = None
             for t in outcome.tracks:
                 t_title = clean_track_title(getattr(t, "title", "") or "")
                 if t_title.lower() not in seen:
-                    seen.add(t_title.lower())
                     try:
                         validate_track(t, self.cfg.max_track_seconds)
-                        added_items.append(QueueItem.from_track(t, requester_id, requester_avatar_url=requester_avatar))
+                        candidate = QueueItem.from_track(
+                            t, requester_id, requester_avatar_url=requester_avatar, is_autoplay=True
+                        )
+                        break
                     except TrackTooLong:
                         continue
-                if len(added_items) >= getattr(self.cfg, "autoplay_batch_size", 5):
-                    break
 
-            if added_items:
-                res = self.queue.add_many(added_items)
-                if res.added > 0:
-                    self.autoplay_failures = 0
-                    next_item = self.queue.next_item(None)
-                    if next_item is not None:
-                        return await self._play_item_locked(next_item)
+            if candidate is not None:
+                self.queue.remove_autoplay_items()
+                self.queue.add(candidate)
+                self.autoplay_failures = 0
+                next_item = self.queue.next_item(None)
+                if next_item is not None:
+                    return await self._play_item_locked(next_item)
             self.autoplay_failures += 1
         except Exception as exc:
             log.debug("guild=%s autoplay query failed: %s", self.guild_id, exc)
@@ -448,6 +532,7 @@ class GuildPlayer:
     async def _advance_locked(self, *, skipped: bool = False, failed: bool = False) -> bool:
         """Move to the next track. Returns True if a track was started."""
         self.votes.clear()
+        self.cancel_autoplay()
         previous = self.current
         self.current = None
         item = self.queue.next_item(previous, skipped=skipped, failed=failed)
@@ -527,17 +612,8 @@ class GuildPlayer:
         return True
 
     async def _preprocess_audio_locked(self, audio: Any) -> None:
-        """Apply audio pre-processing and smooth playback optimizations before playback."""
+        """Apply audio pre-processing and volume optimizations before playback."""
         self.volume = max(0, min(100, self.volume))
-        if self.smooth_playback and not any(
-            f in self.applied_filters for f in ("nightcore", "vaporwave", "smooth", "speed")
-        ):
-            try:
-                ts = Timescale()
-                ts.update(speed=0.98, pitch=1.0, rate=1.0)
-                await self._audio_call(audio.set_filter(ts))
-            except Exception as exc:
-                log.debug("guild=%s audio preprocessing filter failed: %s", self.guild_id, exc)
 
     def _schedule_preload_next(self) -> None:
         """Spawn background task to pre-resolve the next 2 queued items for instant transitions."""
@@ -714,6 +790,8 @@ class GuildPlayer:
             if self.destroyed:
                 raise BotUserError("The player was closed. Try again.")
             self.cancel_prefetch()
+            self.cancel_autoplay()
+            self.queue.remove_autoplay_items()
             before = len(self.queue)
             result = self.queue.add_many(items)
             if result.added == 0:
@@ -821,6 +899,8 @@ class GuildPlayer:
         async with self.lock:
             if self.destroyed:
                 raise BotUserError("The player was closed. Try again.")
+            self.cancel_autoplay()
+            self.queue.remove_autoplay_items()
             if self.current is None:
                 started = await self._play_item_locked(item)
                 self.schedule_snapshot()
@@ -834,6 +914,8 @@ class GuildPlayer:
         async with self.lock:
             if self.destroyed:
                 raise BotUserError("The player was closed. Try again.")
+            self.cancel_autoplay()
+            self.queue.remove_autoplay_items()
             self._end_handled = True
             await self._stop_audio_locked()
             started = await self._play_item_locked(item)
@@ -1002,6 +1084,11 @@ class GuildPlayer:
     def set_autoplay(self, enabled: bool) -> None:
         self.autoplay = enabled
         self.autoplay_failures = 0
+        if not enabled:
+            self.cancel_autoplay()
+            self.queue.remove_autoplay_items()
+        else:
+            self._schedule_autoplay_near_end()
 
     async def similar(self, count: int = 5) -> list[QueueItem]:
         async with self.lock:
@@ -1103,6 +1190,7 @@ class GuildPlayer:
         """Cancel every timer and task, drop the queue, and release callbacks."""
         self.destroyed = True
         self.cancel_prefetch()
+        self.cancel_autoplay()
         self.cancel_all_timers()
         flusher = getattr(self.services, "flusher", None)
         if flusher is not None:
