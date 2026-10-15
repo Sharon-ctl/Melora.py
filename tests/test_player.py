@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 from core.contracts import PlayerServices
 from core.queue import LoopMode, QueueItem
@@ -46,6 +47,33 @@ def test_track_end_advances_and_empty_queue_sets_idle_timer():
         assert player.current is not None and len(player.queue) == 0
         await player.on_track_end(player.current.track.track, "finished")
         assert player.current is None and player.has_timer("idle")
+        await registry.destroy_all("test")
+
+    run(scenario())
+
+
+def test_saved_autoplay_setting_is_restored_on_player_creation():
+    async def scenario():
+        cfg = make_config()
+        backend = FakeBackend()
+        settings = SimpleNamespace(
+            voice_247_channel_id=0,
+            restore_queue=False,
+            autoplay=True,
+            default_volume=100,
+            max_queue=0,
+            dj_role_id=0,
+            dj_only=False,
+        )
+
+        class Storage:
+            async def get_guild_settings(self, guild_id):
+                return settings
+
+        services = PlayerServices(cfg, backend, FakeLoader(), storage=Storage())
+        registry = PlayerRegistry(services)
+        player = await registry.get_or_create(1, 10, 20)
+        assert player.autoplay is True
         await registry.destroy_all("test")
 
     run(scenario())

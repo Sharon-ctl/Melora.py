@@ -166,6 +166,36 @@ async def test_guild_settings_and_queue_snapshot(storage: Storage):
 
 
 @pytest.mark.anyio
+async def test_queue_snapshot_survives_storage_close_and_reopen(tmp_path: Path):
+    from core.storage import StoredTrack
+
+    db_path = tmp_path / "recovery.db"
+    first = Storage(db_path)
+    first.start()
+    expected = [
+        StoredTrack(
+            uri="https://youtu.be/recover",
+            title="Recovery",
+            artist="Test",
+            duration_ms=42_000,
+            position_ms=12_000,
+        )
+    ]
+    await first.save_queue_snapshot(6789, expected, voice_channel_id=1234, card_channel_id=5678)
+    await first.close()
+
+    restarted = Storage(db_path)
+    restarted.start()
+    try:
+        actual = await restarted.get_queue_snapshot(6789)
+        assert actual == expected
+        assert await restarted.get_queue_snapshot_voice_channel_id(6789) == 1234
+        assert await restarted.get_queue_snapshot_card_channel_id(6789) == 5678
+    finally:
+        await restarted.close()
+
+
+@pytest.mark.anyio
 async def test_player_247_suppresses_idle(services: PlayerServices):
     player = GuildPlayer(1, 10, 20, services)
     player.is_247 = True

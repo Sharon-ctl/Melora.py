@@ -51,6 +51,8 @@ def test_config_defaults_and_secret_hiding():
     assert cfg.fallback_search_source == "scsearch"
     assert cfg.sync_on_start is False
     assert cfg.idle_timeout == 300 and cfg.alone_timeout == 60
+    assert (cfg.max_queue_size, cfg.max_per_user, cfg.max_playlist_tracks) == (500, 100, 250)
+    assert cfg.mention_reply_enabled is False
     assert "a" * 60 not in repr(cfg)
     assert "pw-secret" not in repr(cfg)
     assert "pw-secret" in cfg.secrets()
@@ -78,4 +80,11 @@ def test_config_rejects_bad_search_source():
     env = valid_env()
     env["DEFAULT_SEARCH_SOURCE"] = "yt search!"
     with pytest.raises(ConfigError):
+        load_config(env=env)
+
+
+def test_config_rejects_unbounded_queue_and_import_limits():
+    env = valid_env()
+    env["MAX_QUEUE_SIZE"] = "0"
+    with pytest.raises(ConfigError, match="MAX_QUEUE_SIZE"):
         load_config(env=env)

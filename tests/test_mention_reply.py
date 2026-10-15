@@ -30,6 +30,7 @@ class FakeChannel(discord.TextChannel):
         self.id = 12345
         self.name = "general"
         self._perms = perms
+        self.send = AsyncMock()
 
     def permissions_for(self, member):
         return self._perms
@@ -42,6 +43,7 @@ def make_bot():
         "LAVALINK_HOST": "127.0.0.1",
         "LAVALINK_PORT": "2333",
         "LAVALINK_PASSWORD": "secret_password",
+        "MENTION_REPLY_ENABLED": "true",
     })
     alerter = Alerter(cfg)
     bot = MusicBot(cfg, alerter)
@@ -91,31 +93,34 @@ def make_message(
 
 
 @pytest.mark.anyio
-async def test_user_mention_replies():
+async def test_user_mention_sends_standalone_message():
     bot = make_bot()
     msg, _ = make_message(bot, mentions=[bot.user])
     await bot.on_message(msg)
-    assert msg.reply.called
-    am = msg.reply.call_args.kwargs.get("allowed_mentions")
+    assert msg.channel.send.called
+    assert not msg.reply.called
+    am = msg.channel.send.call_args.kwargs.get("allowed_mentions")
     assert am is not None
     assert am.everyone is False and am.users is False and am.roles is False and am.replied_user is False
 
 
 @pytest.mark.anyio
-async def test_role_mention_replies():
+async def test_role_mention_sends_standalone_message():
     bot = make_bot()
     managed_role = FakeRole(888888, is_managed=True)
     msg, _ = make_message(bot, role_mentions=[managed_role], managed_role=managed_role)
     await bot.on_message(msg)
-    assert msg.reply.called
+    assert msg.channel.send.called
+    assert not msg.reply.called
 
 
 @pytest.mark.anyio
-async def test_mention_with_extra_text_replies():
+async def test_mention_with_extra_text_sends_standalone_message():
     bot = make_bot()
     msg, _ = make_message(bot, content=f"hey <@{bot.user.id}> play something", mentions=[bot.user])
     await bot.on_message(msg)
-    assert msg.reply.called
+    assert msg.channel.send.called
+    assert not msg.reply.called
 
 
 @pytest.mark.anyio
@@ -124,7 +129,7 @@ async def test_no_mention_ignored():
     other_user = SimpleNamespace(id=222222, bot=False)
     msg, _ = make_message(bot, content="just chatting", mentions=[other_user])
     await bot.on_message(msg)
-    assert not msg.reply.called
+    assert not msg.channel.send.called
 
 
 @pytest.mark.anyio
@@ -132,7 +137,7 @@ async def test_bot_author_ignored():
     bot = make_bot()
     msg, _ = make_message(bot, author_bot=True, mentions=[bot.user])
     await bot.on_message(msg)
-    assert not msg.reply.called
+    assert not msg.channel.send.called
 
 
 @pytest.mark.anyio
@@ -141,7 +146,7 @@ async def test_no_permission_ignored():
     perms = FakePermissions(view_channel=True, send_messages=False)
     msg, _ = make_message(bot, mentions=[bot.user], channel_perms=perms)
     await bot.on_message(msg)
-    assert not msg.reply.called
+    assert not msg.channel.send.called
 
 
 @pytest.mark.anyio
@@ -150,10 +155,10 @@ async def test_cooldown_enforced():
     msg1, _ = make_message(bot, author_id=333333, mentions=[bot.user])
     msg2, _ = make_message(bot, author_id=333333, mentions=[bot.user])
     await bot.on_message(msg1)
-    assert msg1.reply.called
+    assert msg1.channel.send.called
 
     await bot.on_message(msg2)
-    assert not msg2.reply.called
+    assert not msg2.channel.send.called
 
 
 @pytest.mark.anyio
@@ -166,11 +171,11 @@ async def test_reply_ping_without_explicit_mention_ignored():
         reference=SimpleNamespace(message_id=444444),
     )
     await bot.on_message(msg)
-    assert not msg.reply.called
+    assert not msg.channel.send.called
 
 
 @pytest.mark.anyio
-async def test_reply_ping_with_explicit_mention_replies():
+async def test_reply_ping_with_explicit_mention_sends_standalone_message():
     bot = make_bot()
     msg, _ = make_message(
         bot,
@@ -179,4 +184,5 @@ async def test_reply_ping_with_explicit_mention_replies():
         reference=SimpleNamespace(message_id=444444),
     )
     await bot.on_message(msg)
-    assert msg.reply.called
+    assert msg.channel.send.called
+    assert not msg.reply.called

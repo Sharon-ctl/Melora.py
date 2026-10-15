@@ -77,7 +77,7 @@ class Settings(commands.Cog):
             messages.server_setting_row("Max Queue Size", max_q_str),
             messages.server_setting_row("Restricted Channel", restrict_str, is_mention=bool(s.restrict_channel_id)),
             messages.server_setting_row("24/7 Mode", voice_247_str, is_mention=bool(s.voice_247_channel_id)),
-            messages.server_setting_row("Restore Queue On Restart", "Enabled" if s.restore_queue else "Disabled"),
+            messages.server_setting_row("Crash Recovery Queue Checkpoints", "Enabled" if s.restore_queue else "Disabled"),
             messages.server_setting_row("Voice Channel Status", "Enabled" if s.voice_status_enabled else "Disabled"),
         ]
         text_disp = TextDisplay("\n".join(lines))
@@ -159,13 +159,13 @@ class Settings(commands.Cog):
         except StorageError:
             await reply(interaction, messages.storage_unavailable(), ephemeral=True)
 
-    @settings_group.command(name="max-queue", description="Set maximum queue size (0 for unlimited)")
-    @app_commands.describe(count="Maximum number of tracks in queue (0 for unlimited)")
+    @settings_group.command(name="max-queue", description="Set maximum queue size (0 uses the bot default)")
+    @app_commands.describe(count="Maximum tracks in this server queue (0 uses the bot default)")
     @app_commands.guild_only()
     async def settings_max_queue(
         self,
         interaction: discord.Interaction,
-        count: app_commands.Range[int, 0, 500000],
+        count: app_commands.Range[int, 0, 10000],
     ) -> None:
         self._require_manage_guild(interaction)
         guild_id = interaction.guild_id or 0
@@ -197,8 +197,8 @@ class Settings(commands.Cog):
         except StorageError:
             await reply(interaction, messages.storage_unavailable(), ephemeral=True)
 
-    @settings_group.command(name="restore-queue", description="Save queue and restore it when bot restarts")
-    @app_commands.describe(enabled="Whether to restore queue on startup")
+    @settings_group.command(name="restore-queue", description="Save queue checkpoints for crash recovery")
+    @app_commands.describe(enabled="Whether to keep periodic queue checkpoints for crash recovery")
     @app_commands.guild_only()
     async def settings_restore_queue(self, interaction: discord.Interaction, enabled: bool) -> None:
         self._require_manage_guild(interaction)
@@ -209,6 +209,11 @@ class Settings(commands.Cog):
             player = self.bot.registry.get(guild_id)
             if player is not None:
                 player.restore_queue_enabled = enabled
+                if not enabled:
+                    player.cancel_timer("snapshot")
+            if not enabled:
+                # Disabling restore must also discard an older on-disk snapshot.
+                await self.bot.storage.delete_queue_snapshot(guild_id)
             await reply(
                 interaction,
                 messages.restore_queue_toggled(enabled),

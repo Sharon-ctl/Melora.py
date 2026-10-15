@@ -447,7 +447,11 @@ class Music(commands.Cog):
                         max_entries=max_h,
                     )
                     if asyncio.iscoroutine(coro):
-                        asyncio.create_task(coro)
+                        supervisor = getattr(self.bot, "supervisor", None)
+                        if supervisor is not None:
+                            supervisor.spawn(coro, name=f"history-{user_id}")
+                        else:
+                            coro.close()
         except Exception as exc:
             log.debug("record_user_history error: %s", exc)
 
@@ -754,6 +758,14 @@ class Music(commands.Cog):
     async def autoplay(self, interaction: discord.Interaction, enabled: bool | None = None) -> None:
         player = self._control_gate(interaction)
         new_state = (not player.autoplay) if enabled is None else enabled
+        storage = getattr(self.bot, "storage", None)
+        if storage is not None and interaction.guild_id:
+            try:
+                await storage.update_guild_settings(interaction.guild_id, autoplay=new_state)
+            except Exception as exc:
+                log.warning("guild=%s failed to persist autoplay setting: %s", interaction.guild_id, exc)
+                await reply(interaction, messages.storage_unavailable(), ephemeral=True)
+                return
         player.set_autoplay(new_state)
         await reply(interaction, messages.autoplay_toggled(new_state))
 

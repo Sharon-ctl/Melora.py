@@ -109,8 +109,6 @@ plugins:
     allowSearch: true
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
-    # MUSIC = ytmsearch, WEB = metadata only, TV = the only client that plays audio.
-    # If TV ever breaks, re-add ANDROID_VR and WEBEMBEDDED here as fallbacks.
     clients:
       - MUSIC
       - WEB
@@ -349,10 +347,10 @@ All commands are slash commands only, except mentioning the bot in chat.
 - `/settings max-duration minutes`: Maximum track length in minutes.
 - `/settings max-queue count`: Maximum queue capacity.
 - `/settings restrict [channel]`: Restrict music commands to a channel.
-- `/settings restore-queue enabled`: Opt-in queue snapshot restoration on restart.
+- `/settings restore-queue enabled`: Opt-in periodic queue checkpoints for crash recovery. A graceful shutdown automatically saves the active queue, exact voice channel, and current track position; startup resumes that one saved session. `/leave` discards the session snapshot; a separately configured 24/7 channel still reconnects.
 - `/settings voice-status enabled`: Toggle dynamic voice channel status updates for this server (default true).
 - `/defaultvolume volume`: Set server starting volume.
-- `/247`: Toggle 24/7 mode to prevent idle and alone disconnects.
+- `/247`: Toggle 24/7 mode to prevent idle and alone disconnects, and reconnect to its configured voice channel even when there is no saved active session.
 
 ### Filters & Equalizer Commands
 - `/eq preset name`: Apply an equalizer preset (flat, bassboost, rock, pop, electronic, classical).
@@ -424,14 +422,16 @@ Custom emojis are loaded once at startup from `data/emojis.json`:
 - **Permission Requirements:** The emojis must be usable by the bot. They must either be uploaded as application emojis in the Discord Developer Portal or the bot must be a member of the guild that owns them.
 - **Graceful Fallback:** If `emojis.json` is missing, malformed, or has missing/invalid emoji IDs, the bot logs a warning and falls back to clean text labels for that button (`Loop`, `Previous`, `Pause`/`Resume`, `Skip`, `Stop`).
 
-## Unlimited Defaults & Scaling Configuration
+## Production Limits & Scaling Configuration
 
-All artificial user-facing limits default to **0 (unlimited)**:
-- `MAX_QUEUE_SIZE=0`: No limit on queue size. Slotted items scale to 200,000+ tracks.
-- `MAX_PER_USER=0`: No cap on tracks queued per user.
-- `MAX_PLAYLIST_TRACKS=0`: Full playlist/album imports with streaming 200-track chunks.
+Queue and import limits are finite by default to protect memory and keep large imports responsive:
+- `MAX_QUEUE_SIZE=500`: Maximum upcoming tracks per guild (hard maximum 10,000).
+- `MAX_PER_USER=100`: Maximum upcoming tracks from one user per guild.
+- `MAX_PLAYLIST_TRACKS=250`: Maximum tracks imported from one playlist or album (hard maximum 1,000).
 - `MAX_TRACK_SECONDS=0`: No duration cap on individual tracks.
 - `PLAY_COOLDOWN=0.0`: No cooldown between play requests.
+- `MENTION_REPLY_ENABLED=false`: Keeps the privileged guild message event path disabled unless mention replies are needed.
+- Shutdown stops task groups before closing Lavalink and storage, with a 90-second total cleanup deadline. Tasks that suppress cancellation are logged with their names.
 - `MAX_FAVORITES_PER_USER=0`: Unlimited personal favorites.
 - `MAX_PLAYLISTS_PER_USER=0`: Unlimited personal playlists.
 - `MAX_TRACKS_PER_PLAYLIST=0`: Unlimited tracks per personal playlist.
@@ -451,24 +451,24 @@ All artificial user-facing limits default to **0 (unlimited)**:
 
 ## Gateway Tuning & Speedups
 
-- **`MENTION_REPLY_ENABLED`:** Defaults to `true`. When set to `false`, the `guild_messages` intent and message event handler are dropped entirely, eliminating message processing overhead for massive server counts.
-- **C-Extensions & Speedups:** Windows wheels for `orjson`, `aiodns`, `Brotli`, `pycares`, and `backports.zstd` are installed and integrated for ultra-fast JSON serialization and asynchronous DNS resolution.
+- **`MENTION_REPLY_ENABLED`:** Defaults to `false`. Turn it on only when mention replies are needed; otherwise the `guild_messages` intent and message event handler stay disabled.
+- **C-Extensions & Speedups:** Wheels for `orjson`, `aiodns`, `Brotli`, and `pycares` provide fast JSON serialization and asynchronous DNS resolution.
 - **Minimal Caching:** Message cache is disabled (`max_messages=None`), and member caching only retains voice-active members (`chunk_guilds_at_startup=False`).
 
 ## Central Rate Limiter (data/rate_limits.json)
 
-Rate limiting is **disabled by default** (`"enabled": false` in `data/rate_limits.json`), providing a zero-overhead fast path:
+Rate limiting is **enabled by default** (`"enabled": true` in `data/rate_limits.json`) to bound command and component work per user:
 ```json
 {
-  "enabled": false,
+  "enabled": true,
   "buckets": {
-    "commands": {"rate": 5, "per": 10.0, "enabled": false},
-    "play": {"rate": 4, "per": 10.0, "enabled": false},
-    "queue": {"rate": 8, "per": 10.0, "enabled": false},
-    "library": {"rate": 6, "per": 10.0, "enabled": false},
-    "views": {"rate": 4, "per": 10.0, "enabled": false},
-    "components": {"rate": 3, "per": 3.0, "enabled": false},
-    "guild": {"rate": 30, "per": 10.0, "enabled": false}
+    "commands": {"rate": 5, "per": 10.0, "enabled": true},
+    "play": {"rate": 4, "per": 10.0, "enabled": true},
+    "queue": {"rate": 8, "per": 10.0, "enabled": true},
+    "library": {"rate": 6, "per": 10.0, "enabled": true},
+    "views": {"rate": 4, "per": 10.0, "enabled": true},
+    "components": {"rate": 3, "per": 3.0, "enabled": true},
+    "guild": {"rate": 30, "per": 10.0, "enabled": true}
   },
   "max_keys": 10000,
   "idle_ttl": 60.0
@@ -518,7 +518,7 @@ Run the complete verification protocol, soak test, and scale benchmark:
 # 4. Phase 8 Invariants & Style Audit
 .venv\Scripts\python.exe scripts/verify_phase8.py
 
-# 5. Soak Test (100,000 track unlimited queues, returns to baseline)
+# 5. Soak Test (configured 10,000-track queue ceiling, returns to baseline)
 .venv\Scripts\python.exe -m tests.run_soak --cycles 500 --guilds 25
 
 # 6. Scale Benchmark (2,000 simulated active guilds)

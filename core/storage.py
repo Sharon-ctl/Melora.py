@@ -22,6 +22,7 @@ from utils.cache import TTLCache
 log = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "bot.db"
+STORAGE_QUEUE_LIMIT = 10_000
 
 
 @dataclass(slots=True)
@@ -48,6 +49,7 @@ class StoredTrack:
     artist: str
     duration_ms: int
     requester_id: int = 0
+    position_ms: int = 0
 
 
 @dataclass(frozen=True)
@@ -139,6 +141,14 @@ SCHEMA_MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_user_play_history_played_at
     ON user_play_history (user_id, played_at DESC);
     """,
+    # Migration 4: Persist the exact voice channel for safe session recovery.
+    """
+    ALTER TABLE queue_snapshots ADD COLUMN voice_channel_id INTEGER NOT NULL DEFAULT 0;
+    """,
+    # Migration 5: Restore the now-playing card to its previous text channel.
+    """
+    ALTER TABLE queue_snapshots ADD COLUMN card_channel_id INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 
@@ -147,7 +157,7 @@ class Storage:
 
     def __init__(self, db_path: Path | str | None = None) -> None:
         self.db_path = Path(db_path or DEFAULT_DB_PATH)
-        self._queue: queue.Queue[_StorageOp | tuple[Any, ...] | None] = queue.Queue()
+        self._queue: queue.Queue[_StorageOp | tuple[Any, ...] | None] = queue.Queue(maxsize=STORAGE_QUEUE_LIMIT)
         self._thread: threading.Thread | None = None
         self._closed = False
         self._init_event = threading.Event()
@@ -172,6 +182,9 @@ class Storage:
         try:
             conn = sqlite3.connect(str(self.db_path), check_same_thread=True)
             conn.execute("PRAGMA journal_mode=WAL;")
+            # Queue snapshots are the recovery record for an unclean process exit.
+            # FULL makes a successful commit acknowledgment survive a power loss.
+            conn.execute("PRAGMA synchronous=FULL;")
             conn.execute("PRAGMA foreign_keys=ON;")
             conn.execute("PRAGMA busy_timeout=5000;")
             self._migrate(conn)
@@ -232,11 +245,13 @@ class Storage:
             # Fast-complete coalesced superseded ops
             for cop in coalesced_ops:
                 self._queue.task_done()
-                if not cop.future.done() and not cop.loop.is_closed():
-                    cop.loop.call_soon_threadsafe(cop.future.set_result, None)
+                self._complete_future(cop, result=None)
 
-            # Execute batch operations grouped into a single transaction
+            # Execute operations grouped into a single transaction. Do not resolve
+            # write futures until commit succeeds: callers use this as a durability
+            # boundary during graceful shutdown and queue restoration.
             has_writes = any(op.is_write for op in ops_to_execute)
+            completed: list[tuple[_StorageOp, Any, Exception | None]] = []
             for op in ops_to_execute:
                 try:
                     if op.is_write:
@@ -244,8 +259,7 @@ class Storage:
                     result = op.func(conn)
                     if op.is_write:
                         conn.execute("RELEASE SAVEPOINT op_sp;")
-                    if not op.future.done() and not op.loop.is_closed():
-                        op.loop.call_soon_threadsafe(op.future.set_result, result)
+                    completed.append((op, result, None))
                 except Exception as exc:
                     if op.is_write:
                         try:
@@ -253,8 +267,7 @@ class Storage:
                             conn.execute("RELEASE SAVEPOINT op_sp;")
                         except Exception as rb_exc:
                             log.debug("Savepoint rollback error: %s", rb_exc)
-                    if not op.future.done() and not op.loop.is_closed():
-                        op.loop.call_soon_threadsafe(op.future.set_exception, exc)
+                    completed.append((op, None, exc))
                 finally:
                     self._queue.task_done()
 
@@ -263,6 +276,17 @@ class Storage:
                     conn.commit()
                 except Exception as c_exc:
                     log.debug("Batch commit error: %s", c_exc)
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        log.debug("Batch rollback after commit failure failed", exc_info=True)
+                    completed = [
+                        (op, None, c_exc if op.is_write and error is None else error)
+                        for op, result, error in completed
+                    ]
+
+            for op, result, error in completed:
+                self._complete_future(op, result=result, error=error)
 
         try:
             if conn.in_transaction:
@@ -270,6 +294,26 @@ class Storage:
             conn.close()
         except Exception as exc:
             log.debug("Database final close error: %s", exc)
+
+    @staticmethod
+    def _complete_future(op: _StorageOp, *, result: Any = None, error: Exception | None = None) -> None:
+        """Complete a caller future on its owning loop, tolerating cancellation/close races."""
+        if op.loop.is_closed():
+            return
+
+        def complete() -> None:
+            if op.future.done():
+                return
+            if error is None:
+                op.future.set_result(result)
+            else:
+                op.future.set_exception(error)
+
+        try:
+            op.loop.call_soon_threadsafe(complete)
+        except RuntimeError as exc:
+            # The loop may close between is_closed() and thread-safe scheduling.
+            log.debug("Could not deliver completed storage result because its event loop closed: %s", exc)
 
     def _migrate(self, conn: sqlite3.Connection) -> None:
         cursor = conn.cursor()
@@ -301,7 +345,10 @@ class Storage:
                 f.exception()
 
         future.add_done_callback(_consume_storage_future)
-        self._queue.put(_StorageOp(func, future, loop, is_write=is_write, coalesce_key=coalesce_key))
+        try:
+            self._queue.put_nowait(_StorageOp(func, future, loop, is_write=is_write, coalesce_key=coalesce_key))
+        except queue.Full:
+            raise StorageUnavailable("Storage is busy; retry shortly.") from None
         try:
             return await future
         except (asyncio.CancelledError, GeneratorExit):
@@ -318,8 +365,10 @@ class Storage:
             return
         self._closed = True
         if self._thread is not None and self._thread.is_alive():
-            self._queue.put(None)
-            await asyncio.to_thread(self._thread.join, 5.0)
+            await asyncio.to_thread(self._queue.put, None)
+            await asyncio.to_thread(self._thread.join, 20.0)
+            if self._thread.is_alive():
+                raise StorageUnavailable("Storage worker did not stop before shutdown timeout.")
 
     # ------------------------------------------------------------- backup
     async def backup(self, dest_path: Path | str) -> None:
@@ -683,7 +732,14 @@ class Storage:
         return await self._run(_remove, is_write=True)
 
     # ----------------------------------------------------- queue snapshot
-    async def save_queue_snapshot(self, guild_id: int, tracks: list[StoredTrack]) -> None:
+    async def save_queue_snapshot(
+        self,
+        guild_id: int,
+        tracks: list[StoredTrack],
+        *,
+        voice_channel_id: int = 0,
+        card_channel_id: int = 0,
+    ) -> None:
         raw_list = [
             {
                 "uri": t.uri,
@@ -691,6 +747,7 @@ class Storage:
                 "artist": t.artist,
                 "duration_ms": t.duration_ms,
                 "requester_id": t.requester_id,
+                "position_ms": max(0, int(t.position_ms)),
             }
             for t in tracks
         ]
@@ -705,16 +762,44 @@ class Storage:
             cur = conn.cursor()
             cur.execute(
                 """
-                INSERT INTO queue_snapshots (guild_id, tracks_json, updated_at)
-                VALUES (?, ?, ?)
+                INSERT INTO queue_snapshots (guild_id, tracks_json, updated_at, voice_channel_id, card_channel_id)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(guild_id) DO UPDATE SET
                     tracks_json = excluded.tracks_json,
-                    updated_at = excluded.updated_at
+                    updated_at = excluded.updated_at,
+                    voice_channel_id = excluded.voice_channel_id,
+                    card_channel_id = excluded.card_channel_id
                 """,
-                (guild_id, data_json, time.time()),
+                (guild_id, data_json, time.time(), max(0, int(voice_channel_id)), max(0, int(card_channel_id))),
             )
 
         await self._run(_save, is_write=True, coalesce_key=("queue_snapshot", guild_id))
+
+    async def get_queue_snapshot_voice_channel_id(self, guild_id: int) -> int:
+        """Return the saved channel only when a recoverable queue snapshot exists."""
+        def _get(conn: sqlite3.Connection) -> int:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT voice_channel_id FROM queue_snapshots WHERE guild_id = ? AND tracks_json != ''",
+                (guild_id,),
+            )
+            row = cur.fetchone()
+            return max(0, int(row[0])) if row and row[0] is not None else 0
+
+        return await self._run(_get)
+
+    async def get_queue_snapshot_card_channel_id(self, guild_id: int) -> int:
+        """Return the text channel used by the recoverable now-playing card."""
+        def _get(conn: sqlite3.Connection) -> int:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT card_channel_id FROM queue_snapshots WHERE guild_id = ? AND tracks_json != ''",
+                (guild_id,),
+            )
+            row = cur.fetchone()
+            return max(0, int(row[0])) if row and row[0] is not None else 0
+
+        return await self._run(_get)
 
     async def get_queue_snapshot(self, guild_id: int) -> list[StoredTrack]:
         def _get(conn: sqlite3.Connection) -> list[StoredTrack]:

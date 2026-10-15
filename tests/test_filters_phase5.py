@@ -188,6 +188,7 @@ async def test_autoplay_failure_limit(services: PlayerServices):
     player.autoplay_failures = 3
     result = await player._try_autoplay_locked(None)
     assert result is False
+    assert player.autoplay is False
 
     player.shutdown()
     assert player.autoplay is False

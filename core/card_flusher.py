@@ -23,6 +23,8 @@ class CardFlusher:
         self._pending: dict[int, Any] = {}
         self._stopped = False
         self._task: asyncio.Task[None] | None = None
+        self._batch_limit = 100
+        self._max_concurrency = 4
 
     def start(self) -> None:
         self._stopped = False
@@ -64,18 +66,23 @@ class CardFlusher:
                 if not self._pending:
                     continue
 
-                batch = self._pending
-                self._pending = {}
+                batch = {}
+                for guild_id in list(self._pending)[:self._batch_limit]:
+                    batch[guild_id] = self._pending.pop(guild_id)
+                semaphore = asyncio.Semaphore(self._max_concurrency)
 
-                for guild_id, player in batch.items():
+                async def update(guild_id: int, player: Any) -> None:
                     if getattr(player, "destroyed", False):
-                        continue
-                    try:
-                        await player._update_card_locked()
-                    except Exception:
-                        log.debug("guild=%s flusher card update failed", guild_id, exc_info=True)
-                    # Yield between edits so event loop stays responsive
-                    await asyncio.sleep(0)
+                        return
+                    async with semaphore:
+                        try:
+                            await player._update_card_locked()
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            log.debug("guild=%s flusher card update failed", guild_id, exc_info=True)
+
+                await asyncio.gather(*(update(guild_id, player) for guild_id, player in batch.items()))
             except asyncio.CancelledError:
                 break
             except Exception:

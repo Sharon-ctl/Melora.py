@@ -48,12 +48,14 @@ class CentralScheduler:
         self._active[(guild_id, timer_name)] = seq
         deadline = time.monotonic() + delay
         heapq.heappush(self._heap, (deadline, seq, guild_id, timer_name, reason))
+        self._compact_if_needed()
         self._wakeup_event.set()
 
     def cancel(self, guild_id: int, timer_name: str) -> None:
         """Cancel a timer for a guild."""
         if (guild_id, timer_name) in self._active:
             del self._active[(guild_id, timer_name)]
+            self._compact_if_needed()
             self._wakeup_event.set()
 
     def cancel_guild(self, guild_id: int) -> None:
@@ -62,7 +64,19 @@ class CentralScheduler:
         if keys:
             for k in keys:
                 del self._active[k]
+            self._compact_if_needed()
             self._wakeup_event.set()
+
+    def _compact_if_needed(self) -> None:
+        # Timer refreshes use lazy invalidation. Periodic compaction bounds the
+        # stale heap tail that can otherwise grow under frequent rescheduling.
+        if len(self._heap) <= max(64, len(self._active) * 2):
+            return
+        self._heap = [
+            entry for entry in self._heap
+            if self._active.get((entry[2], entry[3])) == entry[1]
+        ]
+        heapq.heapify(self._heap)
 
     def has_timer(self, guild_id: int, timer_name: str) -> bool:
         """Check if a timer is actively scheduled for a guild."""

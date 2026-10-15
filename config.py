@@ -22,6 +22,8 @@ _WEBHOOK_PREFIXES = (
     "https://discordapp.com/api/webhooks/",
 )
 _LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+DEFAULT_MAX_QUEUE_SIZE = 500
+MAX_QUEUE_SIZE_LIMIT = 10_000
 
 
 class ConfigError(Exception):
@@ -306,8 +308,10 @@ def load_config(env: Mapping[str, str] | None = None, dotenv_path: str | Path | 
     if len(set(names)) != len(names):
         r.errors.append("Lavalink node names must be unique")
 
-    max_queue = r.integer("MAX_QUEUE_SIZE", 0, 0, 500000)
-    raw_per_user = r.integer("MAX_PER_USER", 0, 0, 500000)
+    # Finite defaults and a hard ceiling prevent a valid but hostile config
+    # (or public playlist) from turning one guild queue into process-wide RAM use.
+    max_queue = r.integer("MAX_QUEUE_SIZE", DEFAULT_MAX_QUEUE_SIZE, 1, MAX_QUEUE_SIZE_LIMIT)
+    raw_per_user = r.integer("MAX_PER_USER", 100, 1, 10000)
     per_user = min(raw_per_user, max_queue) if (max_queue > 0 and raw_per_user > 0) else raw_per_user
     log_level = r.text("LOG_LEVEL", "INFO").upper()
     if log_level not in _LOG_LEVELS:
@@ -328,7 +332,7 @@ def load_config(env: Mapping[str, str] | None = None, dotenv_path: str | Path | 
         dj_role_id=r.integer("DJ_ROLE_ID", 0, 0, 2**63 - 1),
         max_queue_size=max_queue,
         max_per_user=per_user,
-        max_playlist_tracks=r.integer("MAX_PLAYLIST_TRACKS", 0, 0, 500000),
+        max_playlist_tracks=r.integer("MAX_PLAYLIST_TRACKS", 250, 1, 1000),
         max_track_seconds=r.integer("MAX_TRACK_SECONDS", 0, 0, 864000),
         default_volume=r.integer("DEFAULT_VOLUME", 100, 0, 100),
         idle_timeout=r.integer("IDLE_TIMEOUT", 300, 10, 86400),
@@ -358,7 +362,7 @@ def load_config(env: Mapping[str, str] | None = None, dotenv_path: str | Path | 
         db_path=r.text("DB_PATH", "data/bot.db"),
         mention_reply_cooldown=r.number("MENTION_REPLY_COOLDOWN", 10.0, 0.0, 3600.0),
         autocomplete_search_enabled=r.boolean("AUTOCOMPLETE_SEARCH_ENABLED", True),
-        mention_reply_enabled=r.boolean("MENTION_REPLY_ENABLED", True),
+        mention_reply_enabled=r.boolean("MENTION_REPLY_ENABLED", False),
         voice_status_enabled=r.boolean("VOICE_STATUS_ENABLED", True),
         voice_status_use_emoji=r.boolean("VOICE_STATUS_USE_EMOJI", True),
         user_history_enabled=r.boolean("USER_HISTORY_ENABLED", True),

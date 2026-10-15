@@ -88,7 +88,6 @@ class GuildPlayer:
         self.current_eq: str | None = None
         self.dj_role_id: int = 0
         self.dj_only: bool = False
-        self.smooth_playback: bool = False
         # Now playing card state (IDs only, never Discord objects)
         self.nowplaying_channel_id: int | None = None
         self.nowplaying_message_id: int | None = None
@@ -237,12 +236,13 @@ class GuildPlayer:
                 self.nowplaying_view = None
 
     async def create_card(self) -> None:
-        """Create the now playing card for the first track."""
+        """Ensure the now-playing card exists for the current track."""
         if self.destroyed or self.current is None:
             return
-        self.nowplaying_channel_id = self.text_channel_id
-        self.nowplaying_message_id = None
-        await self._update_card_locked(recreate=True)
+        if self.nowplaying_channel_id is None:
+            self.nowplaying_channel_id = self.text_channel_id
+        # Track-start events and startup recovery may request this concurrently.
+        await self._update_card_locked()
 
     async def delete_card(self) -> None:
         """Delete the now playing card message. Safe to call any time."""
@@ -282,38 +282,71 @@ class GuildPlayer:
         if task is not None:
             self._timers["snapshot"] = task
 
-    async def save_snapshot_now(self) -> None:
-        """Immediately save queue snapshot to storage without debouncing."""
+    async def save_snapshot_now(self, *, force: bool = False, seal: bool = False) -> None:
+        """Persist a consistent recovery snapshot; graceful shutdown can force it."""
         storage = getattr(self.services, "storage", None)
-        if storage is None:
+        if storage is None or (not force and not self.restore_queue_enabled):
             return
-        tracks: list[StoredTrack] = []
-        if self.current is not None:
-            tracks.append(
-                StoredTrack(
-                    uri=self.current.uri,
-                    title=self.current.title,
-                    artist=self.current.artist,
-                    duration_ms=self.current.duration_ms,
-                    requester_id=self.current.requester_id,
+        # Take one consistent view of the active item and queue while player
+        # mutations are serialized. Persist after releasing the playback lock.
+        async with self.lock:
+            if seal:
+                self.destroyed = True
+            tracks: list[StoredTrack] = []
+            if self.current is not None:
+                audio = self.audio
+                raw_position = getattr(audio, "position", None) if audio is not None else None
+                position_ms = (
+                    max(0, int(raw_position))
+                    if isinstance(raw_position, (int, float))
+                    else self._current_position_seconds() * 1000
                 )
-            )
-        for item in self.queue:
-            tracks.append(
-                StoredTrack(
-                    uri=item.uri,
-                    title=item.title,
-                    artist=item.artist,
-                    duration_ms=item.duration_ms,
-                    requester_id=item.requester_id,
+                if self.current.duration_ms > 0:
+                    position_ms = min(position_ms, max(0, self.current.duration_ms - 1000))
+                tracks.append(
+                    StoredTrack(
+                        uri=self.current.uri,
+                        title=self.current.title,
+                        artist=self.current.artist,
+                        duration_ms=self.current.duration_ms,
+                        requester_id=self.current.requester_id,
+                        position_ms=position_ms,
+                    )
                 )
-            )
-        if tracks:
-            try:
-                await storage.save_queue_snapshot(self.guild_id, tracks)
+            for item in self.queue:
+                tracks.append(
+                    StoredTrack(
+                        uri=item.uri,
+                        title=item.title,
+                        artist=item.artist,
+                        duration_ms=item.duration_ms,
+                        requester_id=item.requester_id,
+                    )
+                )
+            backend = getattr(self.services, "backend", None)
+            connected = False
+            if backend is not None:
+                try:
+                    connected = bool(backend.voice_connected(self.guild_id, self.voice_channel_id))
+                except Exception as exc:
+                    log.debug("guild=%s voice state check failed during snapshot: %s", self.guild_id, exc)
+            voice_channel_id = self.voice_channel_id if connected else 0
+            card_channel_id = self.nowplaying_channel_id or self.text_channel_id
+        try:
+            if tracks:
+                await storage.save_queue_snapshot(
+                    self.guild_id,
+                    tracks,
+                    voice_channel_id=voice_channel_id,
+                    card_channel_id=card_channel_id,
+                )
                 log.info("guild=%s saved queue snapshot (%d tracks)", self.guild_id, len(tracks))
-            except Exception as exc:
-                log.debug("guild=%s failed to save queue snapshot: %s", self.guild_id, exc)
+            else:
+                # An empty queue is meaningful: remove an older snapshot so a
+                # stopped queue cannot unexpectedly return after a later restart.
+                await storage.delete_queue_snapshot(self.guild_id)
+        except Exception as exc:
+            log.warning("guild=%s failed to persist queue snapshot: %s", self.guild_id, exc)
 
     async def _debounced_snapshot(self, delay: float = 5.0) -> None:
         await asyncio.sleep(delay)
@@ -465,18 +498,26 @@ class GuildPlayer:
                             if len(self.queue) == 0 or not self.queue.has_user_items():
                                 self.queue.remove_autoplay_items()
                                 self.queue.add(auto_item)
+                                self.autoplay_failures = 0
                                 self.schedule_snapshot()
                                 self.schedule_card_update()
                             break
                         except TrackTooLong:
                             continue
+                else:
+                    self.autoplay_failures += 1
         except asyncio.CancelledError:
             log.debug("guild=%s autoplay near-end worker cancelled", self.guild_id)
         except Exception as exc:
             log.debug("guild=%s autoplay near-end worker failed: %s", self.guild_id, exc)
+            self.autoplay_failures += 1
 
     async def _try_autoplay_locked(self, last_track: QueueItem | None) -> bool:
-        if not self.autoplay or self.autoplay_failures >= 3:
+        if not self.autoplay:
+            return False
+        if self.autoplay_failures >= 3:
+            log.info("guild=%s disabling autoplay after repeated lookup failures", self.guild_id)
+            self.set_autoplay(False)
             return False
         if len(self.queue) > 0 and self.queue.has_user_items():
             return False
@@ -660,14 +701,15 @@ class GuildPlayer:
             cfg = self.services.cfg
             if getattr(cfg, "user_history_enabled", True):
                 max_h = getattr(cfg, "user_history_max", 50)
-                asyncio.create_task(
+                self.tasks.spawn(
                     self.services.storage.record_user_play_history(
                         item.requester_id,
                         item.title,
                         item.artist or "",
                         item.uri or "",
                         max_entries=max_h,
-                    )
+                    ),
+                    name="history-write",
                 )
 
     async def _preload_next(self) -> None:
@@ -689,8 +731,15 @@ class GuildPlayer:
 
     async def _load_fallback(self, item: QueueItem) -> Any | None:
         try:
+            query = (item.query or "").strip()
+            # A URL is an identifier, not useful search text for another
+            # source. Search that source by the resolved track metadata instead.
+            if query.lower().startswith(("http://", "https://")):
+                query = " ".join(part for part in (item.artist, item.title) if part).strip()
+            if not query:
+                return None
             track = await self.services.loader.load_first_with_source(
-                self.guild_id, self.cfg.fallback_search_source, item.query or ""
+                self.guild_id, self.cfg.fallback_search_source, query
             )
             validate_track(track, self.cfg.max_track_seconds)
             return track
@@ -822,6 +871,8 @@ class GuildPlayer:
 
     async def stop(self) -> None:
         async with self.lock:
+            if self.destroyed:
+                raise BotUserError("The player was closed. Try again.")
             self.queue.clear()
             self.current = None
             self._end_handled = True
@@ -881,6 +932,8 @@ class GuildPlayer:
 
     async def clear(self) -> int:
         async with self.lock:
+            if self.destroyed:
+                raise BotUserError("The player was closed. Try again.")
             self.cancel_prefetch()
             count = self.queue.clear()
             self.schedule_snapshot()

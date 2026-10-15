@@ -43,6 +43,7 @@ def _make_bot() -> MusicBot:
         "LAVALINK_HOST": "127.0.0.1",
         "LAVALINK_PORT": "2333",
         "LAVALINK_PASSWORD": "secret_password",
+        "MENTION_REPLY_ENABLED": "true",
     })
     bot = MusicBot(cfg, Alerter(cfg))
     bot_user = SimpleNamespace(id=999999, bot=True)
@@ -63,6 +64,7 @@ class FakeTextChannel(discord.TextChannel):
         self.id = 555
         self.name = "general"
         self._perms = perms
+        self.send = AsyncMock()
 
     def permissions_for(self, member: Any) -> FakePerms:
         return self._perms
@@ -73,6 +75,7 @@ class FakeThreadChannel(discord.Thread):
         self.id = 556
         self.name = "thread-1"
         self._perms = perms
+        self.send = AsyncMock()
 
     def permissions_for(self, member: Any) -> FakePerms:
         return self._perms
@@ -96,7 +99,8 @@ async def test_mention_in_thread_with_permissions():
         reply=AsyncMock(),
     )
     await bot.on_message(msg)
-    assert msg.reply.called
+    assert channel.send.called
+    assert not msg.reply.called
 
 
 @pytest.mark.anyio
@@ -117,7 +121,7 @@ async def test_mention_without_send_permission_ignored():
         reply=AsyncMock(),
     )
     await bot.on_message(msg)
-    assert not msg.reply.called
+    assert not channel.send.called
 
 
 @pytest.mark.anyio
@@ -139,7 +143,8 @@ async def test_mention_cooldown_triggers_ignore():
     )
     # First mention succeeds
     await bot.on_message(msg)
-    assert msg.reply.call_count == 1
+    assert channel.send.call_count == 1
+    assert not msg.reply.called
 
     # Immediate second mention from same user is blocked by cooldown
     msg2 = SimpleNamespace(
@@ -153,7 +158,8 @@ async def test_mention_cooldown_triggers_ignore():
         reply=AsyncMock(),
     )
     await bot.on_message(msg2)
-    assert msg2.reply.call_count == 0
+    assert channel.send.call_count == 1
+    assert not msg2.reply.called
 
 
 # -----------------------------------------------------------------------------

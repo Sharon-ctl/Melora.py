@@ -88,7 +88,7 @@ class SpotifyProvider(ABC):
         """Fetch album metadata."""
 
     @abstractmethod
-    async def get_playlist(self, spotify_id: str) -> SpotifyPlaylist | None:
+    async def get_playlist(self, spotify_id: str, max_tracks: int | None = None) -> SpotifyPlaylist | None:
         """Fetch playlist metadata."""
 
 
@@ -163,18 +163,18 @@ class ScraperSpotifyProvider(SpotifyProvider):
             log.debug("ScraperSpotifyProvider get_album(%s) failed: %s", spotify_id, exc)
             return None
 
-    async def get_playlist(self, spotify_id: str) -> SpotifyPlaylist | None:
+    async def get_playlist(self, spotify_id: str, max_tracks: int | None = None) -> SpotifyPlaylist | None:
         try:
             client = self._get_client()
             playlist_obj = await asyncio.wait_for(
-                asyncio.to_thread(client.get_playlist, spotify_id, max_tracks=None),
+                asyncio.to_thread(client.get_playlist, spotify_id, max_tracks=max_tracks),
                 timeout=REQUEST_TIMEOUT,
             )
             if not playlist_obj or not getattr(playlist_obj, "name", None):
                 return None
             raw_tracks = getattr(playlist_obj, "tracks", []) or []
             tracks: list[SpotifyTrack] = []
-            for item in raw_tracks:
+            for item in raw_tracks[:max_tracks] if max_tracks is not None else raw_tracks:
                 t = getattr(item, "track", item)
                 if not t or not getattr(t, "name", None):
                     continue
@@ -349,7 +349,7 @@ class EmbedSpotifyProvider(SpotifyProvider):
             uri=f"spotify:album:{spotify_id}",
         )
 
-    async def get_playlist(self, spotify_id: str) -> SpotifyPlaylist | None:
+    async def get_playlist(self, spotify_id: str, max_tracks: int | None = None) -> SpotifyPlaylist | None:
         html_text = await self._fetch_embed_html("playlist", spotify_id)
         if not html_text:
             return None
@@ -369,7 +369,7 @@ class EmbedSpotifyProvider(SpotifyProvider):
                     playlist_name = entity.get("name", playlist_name)
                     track_list = entity.get("trackList", [])
                     total = int(entity.get("total_tracks", len(track_list)) or len(track_list))
-                    for t in track_list:
+                    for t in track_list[:max_tracks] if max_tracks is not None else track_list:
                         name = t.get("title") or t.get("name")
                         if not name:
                             continue
@@ -408,10 +408,12 @@ class SpotifyService:
         enabled: bool = True,
         primary: SpotifyProvider | None = None,
         fallback: SpotifyProvider | None = None,
+        max_playlist_tracks: int = 250,
     ) -> None:
         self.enabled = enabled
         self.primary = primary or ScraperSpotifyProvider()
         self.fallback = fallback or EmbedSpotifyProvider()
+        self.max_playlist_tracks = max(1, max_playlist_tracks)
         self._track_cache: TTLCache[str, SpotifyTrack] = TTLCache(max_size=1000, ttl=3600.0)
         self._album_cache: TTLCache[str, SpotifyAlbum] = TTLCache(max_size=200, ttl=3600.0)
         self._playlist_cache: TTLCache[str, SpotifyPlaylist] = TTLCache(max_size=200, ttl=1800.0)
@@ -456,11 +458,11 @@ class SpotifyService:
         cached = self._playlist_cache.get(spotify_id)
         if cached is not None:
             return cached
-        res = await self.primary.get_playlist(spotify_id)
+        res = await self.primary.get_playlist(spotify_id, max_tracks=self.max_playlist_tracks)
         if res is not None:
             self._playlist_cache.set(spotify_id, res)
             return res
-        res = await self.fallback.get_playlist(spotify_id)
+        res = await self.fallback.get_playlist(spotify_id, max_tracks=self.max_playlist_tracks)
         if res is not None:
             self._playlist_cache.set(spotify_id, res)
         return res

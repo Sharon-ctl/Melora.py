@@ -164,6 +164,18 @@ class VoiceEvents(commands.Cog):
             return
 
         if member.id == bot_user.id:
+            # discord.py dispatches gateway events as independent tasks. If a
+            # newer voice-state event already updated the cached bot member,
+            # ignore this older callback so it cannot move the player back to a
+            # stale channel (or tear down a newer connection).
+            bot_member = getattr(member.guild, "me", None)
+            bot_voice = getattr(bot_member, "voice", None)
+            if bot_voice is not None:
+                actual_channel = getattr(bot_voice, "channel", None)
+                actual_channel_id = actual_channel.id if actual_channel is not None else None
+                event_channel_id = after.channel.id if after.channel is not None else None
+                if actual_channel_id != event_channel_id:
+                    return
             if after.channel is not None and after.channel.id == player.voice_channel_id:
                 return
             if after.channel is None and player.age() < STALE_LEAVE_SECONDS:

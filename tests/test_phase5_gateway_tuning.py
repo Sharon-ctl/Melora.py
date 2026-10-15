@@ -2,7 +2,7 @@
 
 Verifies:
 - discord.py speedups (orjson, aiohttp speedups) are installed and actively used
-- MENTION_REPLY_ENABLED config option (defaults to True)
+- MENTION_REPLY_ENABLED config option (defaults to False)
 - When MENTION_REPLY_ENABLED=False: guild_messages intent is not requested and message events are suppressed
 - When MENTION_REPLY_ENABLED=True and server count > 500: warning logged recommending False
 - Gateway caches: zero message cache, voice-only member cache, no unused intents
@@ -33,7 +33,7 @@ def test_discord_speedups_installed_and_used():
 
 
 def test_mention_reply_enabled_default_and_config():
-    """Verify MENTION_REPLY_ENABLED defaults to True and can be configured."""
+    """Verify MENTION_REPLY_ENABLED defaults off and can be enabled."""
     base_env = {
         "DISCORD_TOKEN": "A" * 35,
         "OWNER_ID": "123456789",
@@ -42,10 +42,10 @@ def test_mention_reply_enabled_default_and_config():
         "LAVALINK_PASSWORD": "secret_password",
     }
     cfg_default = load_config(base_env)
-    assert cfg_default.mention_reply_enabled is True
+    assert cfg_default.mention_reply_enabled is False
 
-    cfg_disabled = load_config({**base_env, "MENTION_REPLY_ENABLED": "false"})
-    assert cfg_disabled.mention_reply_enabled is False
+    cfg_enabled = load_config({**base_env, "MENTION_REPLY_ENABLED": "true"})
+    assert cfg_enabled.mention_reply_enabled is True
 
 
 def test_mention_reply_disabled_intents_and_dispatch():

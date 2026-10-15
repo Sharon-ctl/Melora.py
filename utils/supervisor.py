@@ -75,7 +75,16 @@ class TaskSet:
         current = _current_task()
         pending = [t for t in self._tasks if t is not current]
         if pending:
-            await asyncio.wait(pending, timeout=timeout)
+            _, remaining = await asyncio.wait(pending, timeout=timeout)
+            if remaining:
+                for task in remaining:
+                    task.cancel()
+                _, remaining = await asyncio.wait(remaining, timeout=1.0)
+                if remaining:
+                    log.error("%d short task(s) ignored cancellation: %s", len(remaining),
+                              ", ".join(t.get_name() for t in remaining))
+        # Keep any cancellation-resistant tasks registered. Their owners can
+        # inspect them and shutdown can report that they did not stop.
 
 
 class TaskSupervisor:
@@ -85,9 +94,13 @@ class TaskSupervisor:
         self._on_critical = on_critical
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._short_tasks = TaskSet("supervised-short", max_tasks=256)
+        self._stopping = False
 
     def spawn(self, coro: Coroutine[Any, Any, Any], *, name: str) -> asyncio.Task[Any] | None:
         """Start a short-lived task bounded by TaskSet."""
+        if self._stopping:
+            coro.close()
+            return None
         return self._short_tasks.spawn(coro, name=name)
 
     def start(
@@ -100,6 +113,8 @@ class TaskSupervisor:
         max_backoff: float = 60.0,
     ) -> asyncio.Task[Any]:
         """Start a task by name. If it is already running, return the existing task."""
+        if self._stopping:
+            raise RuntimeError("TaskSupervisor is stopping")
         existing = self._tasks.get(name)
         if existing is not None and not existing.done():
             return existing
@@ -175,11 +190,20 @@ class TaskSupervisor:
         return sorted(name for name, task in self._tasks.items() if not task.done())
 
     async def stop_all(self, timeout: float = 10.0) -> None:
+        self._stopping = True
         self._short_tasks.cancel_all()
         await self._short_tasks.wait_closed(timeout=timeout)
         tasks = [task for task in self._tasks.values() if not task.done()]
         for task in tasks:
             task.cancel()
         if tasks:
-            await asyncio.wait(tasks, timeout=timeout)
-        self._tasks.clear()
+            _, pending = await asyncio.wait(tasks, timeout=timeout)
+            if pending:
+                for task in pending:
+                    task.cancel()
+                _, pending = await asyncio.wait(pending, timeout=1.0)
+                if pending:
+                    log.error("%d supervised task(s) ignored cancellation: %s", len(pending),
+                              ", ".join(t.get_name() for t in pending))
+            else:
+                self._tasks.clear()

@@ -259,7 +259,7 @@ class Filters(commands.Cog):
         await view.render(1)
         await reply_card(interaction, view)
 
-    @app_commands.command(name="speed", description="Set playback speed (e.g. 0.98 for smooth, 1.0 for normal)")
+    @app_commands.command(name="speed", description="Set playback speed")
     @app_commands.describe(speed="Speed multiplier from 0.5 to 2.0 (default 0.98)")
     @app_commands.guild_only()
     async def speed(

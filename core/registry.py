@@ -62,6 +62,14 @@ class PlayerRegistry:
         self.flusher.stop()
         self.loop_monitor.stop()
 
+    async def wait_background_tasks(self, timeout: float = 10.0) -> None:
+        tasks = [self.scheduler._task, self.flusher._task, self.loop_monitor._task]
+        live = [task for task in tasks if task is not None and not task.done()]
+        if live:
+            _, pending = await asyncio.wait(live, timeout=timeout)
+            if pending:
+                raise TimeoutError("Registry background tasks did not stop: " + ", ".join(t.get_name() for t in pending))
+
     def _on_load_shedding_changed(self, active: bool) -> None:
         if active:
             self.flusher.set_cadence(4.0)
@@ -129,8 +137,10 @@ class PlayerRegistry:
                     s = await storage.get_guild_settings(guild_id)
                     player.is_247 = bool(s.voice_247_channel_id)
                     player.restore_queue_enabled = bool(s.restore_queue)
-                    player.autoplay = False
+                    player.autoplay = bool(s.autoplay)
                     player.volume = min(100, max(0, s.default_volume))
+                    if s.max_queue > 0:
+                        player.queue.max_size = min(s.max_queue, 10_000)
                     player.dj_role_id = s.dj_role_id
                     player.dj_only = bool(s.dj_only)
                 except Exception as exc:
@@ -157,10 +167,23 @@ class PlayerRegistry:
         self.scheduler.cancel_guild(guild_id)
         self.flusher.cancel(guild_id)
         player = self._players.pop(guild_id, None)
+        if player is not None:
+            # Prevent in-flight commands from changing the recovery state while
+            # teardown awaits storage/network work.
+            player.destroyed = True
+            if reason not in ("leave command", "removed from guild", "guild removed"):
+                try:
+                    if reason == "shutdown":
+                        await player.save_snapshot_now(force=True, seal=True)
+                    elif player.restore_queue_enabled:
+                        await player.save_snapshot_now(seal=True)
+                except (Exception, asyncio.CancelledError) as snap_exc:
+                    log.warning("guild=%s snapshot save error during teardown: %s", guild_id, snap_exc)
 
         voice_status = getattr(self.services, "voice_status", None)
         if voice_status is not None:
             is_forced = reason in (
+                "shutdown",
                 "disconnected",
                 "voice channel deleted",
                 "channel deleted",
@@ -173,15 +196,23 @@ class PlayerRegistry:
                 log.debug("guild=%s voice status destroy cleanup error: %s", guild_id, vs_exc)
 
         if player is not None:
-            if reason == "shutdown":
+            if reason in ("leave command", "removed from guild", "guild removed"):
+                # Explicit user/guild removal is terminal, unlike a process restart
+                # or an unexpected voice disconnect where recovery is useful.
                 try:
-                    await player.save_snapshot_now()
+                    storage = getattr(self.services, "storage", None)
+                    if storage is not None:
+                        await storage.delete_queue_snapshot(guild_id)
                 except (Exception, asyncio.CancelledError) as snap_exc:
-                    log.debug("guild=%s snapshot save error on shutdown: %s", guild_id, snap_exc)
+                    log.warning("guild=%s could not clear queue snapshot: %s", guild_id, snap_exc)
             # Delete the now playing card before shutting down tasks
             card_ch = player.nowplaying_channel_id
             card_msg = player.nowplaying_message_id
             player.shutdown()
+            try:
+                await player.tasks.wait_closed(timeout=5.0)
+            except Exception:
+                log.exception("guild=%s player tasks did not close cleanly", guild_id)
             self.destroyed_total += 1
             if card_ch and card_msg:
                 try:

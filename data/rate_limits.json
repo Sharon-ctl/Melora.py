@@ -1,40 +1,40 @@
 {
-  "enabled": false,
+  "enabled": true,
   "buckets": {
     "commands": {
       "rate": 5,
       "per": 10.0,
-      "enabled": false
+      "enabled": true
     },
     "play": {
       "rate": 4,
       "per": 10.0,
-      "enabled": false
+      "enabled": true
     },
     "queue": {
       "rate": 8,
       "per": 10.0,
-      "enabled": false
+      "enabled": true
     },
     "library": {
       "rate": 6,
       "per": 10.0,
-      "enabled": false
+      "enabled": true
     },
     "views": {
       "rate": 4,
       "per": 10.0,
-      "enabled": false
+      "enabled": true
     },
     "components": {
       "rate": 3,
       "per": 3.0,
-      "enabled": false
+      "enabled": true
     },
     "guild": {
       "rate": 30,
       "per": 10.0,
-      "enabled": false
+      "enabled": true
     }
   },
   "max_keys": 10000,

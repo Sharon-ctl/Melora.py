@@ -149,8 +149,8 @@ async def test_button_silent_double_click_guard():
 
 
 def test_messages_unlimited_display():
-    assert messages.max_queue_set(0) == "Set max queue to **Unlimited**"
-    assert messages.max_queue_set(-1) == "Set max queue to **Unlimited**"
+    assert messages.max_queue_set(0) == "Set max queue to **the bot default**"
+    assert messages.max_queue_set(-1) == "Set max queue to **the bot default**"
     assert messages.max_queue_set(50) == "Set max queue to **50 tracks**"
 
     assert messages.max_duration_set(0) == "Set max duration to **Unlimited**"

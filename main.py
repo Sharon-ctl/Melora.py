@@ -41,6 +41,7 @@ log = logging.getLogger("musicbot")
 
 EXTENSIONS = ("cogs.music", "cogs.voice_events", "cogs.admin", "cogs.library", "cogs.settings", "cogs.filters")
 SHUTDOWN_STEP_TIMEOUT = 20.0
+SHUTDOWN_TOTAL_TIMEOUT = 90.0
 EXIT_OK = 0
 EXIT_CRASH = 1
 EXIT_CONFIG = 2
@@ -103,7 +104,7 @@ class MusicBot(commands.AutoShardedBot):
         self.supervisor = TaskSupervisor(on_critical=self._on_critical_task)
         self.started_at = time.monotonic()
         self.storage = Storage()
-        self.spotify = SpotifyService(enabled=cfg.spotify_enabled)
+        self.spotify = SpotifyService(enabled=cfg.spotify_enabled, max_playlist_tracks=cfg.max_playlist_tracks)
         self.rate_limiter = RateLimiter()
         self._mention_cooldown = CooldownTracker(self.cfg.mention_reply_cooldown)
         self.lavalink: LavalinkClient
@@ -372,9 +373,8 @@ class MusicBot(commands.AutoShardedBot):
             container = create_card_container(text)
             view = BaseCardView(timeout=60.0)
             view.add_item(container)
-            await message.reply(
+            await channel.send(
                 view=view,
-                mention_author=False,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         except Exception as exc:
@@ -466,8 +466,22 @@ class MusicBot(commands.AutoShardedBot):
                 await asyncio.sleep(random.uniform(0.01, 0.05))
                 try:
                     s = await self.storage.get_guild_settings(guild.id)
-                    if s.voice_247_channel_id:
-                        vc = guild.get_channel(s.voice_247_channel_id)
+                    saved_channel_id = await self.storage.get_queue_snapshot_voice_channel_id(guild.id)
+                    saved_card_channel_id = await self.storage.get_queue_snapshot_card_channel_id(guild.id)
+                    snapshot = (
+                        await self.storage.get_queue_snapshot(guild.id)
+                        if s.restore_queue or saved_channel_id
+                        else []
+                    )
+                    # A clean shutdown records the exact channel the bot was
+                    # connected to. Rejoin only that saved channel (or the
+                    # explicit 24/7 target); never infer a channel from guild
+                    # members or stale gateway events.
+                    recovery_channel_id = saved_channel_id if snapshot else 0
+                    target_channel_id = s.voice_247_channel_id or recovery_channel_id
+                    should_restore = bool(snapshot) and bool(s.restore_queue or recovery_channel_id)
+                    if target_channel_id:
+                        vc = guild.get_channel(target_channel_id)
                         me = guild.me
                         if isinstance(vc, (discord.VoiceChannel, discord.StageChannel)) and isinstance(me, discord.Member):
                             perms = vc.permissions_for(me)
@@ -476,48 +490,67 @@ class MusicBot(commands.AutoShardedBot):
                                 if not text_id and guild.text_channels:
                                     text_id = guild.text_channels[0].id
                                 player = await self.registry.get_or_create(guild.id, vc.id, text_id or 0)
-                                player.is_247 = True
+                                player.is_247 = bool(s.voice_247_channel_id)
+                                if saved_card_channel_id and guild.get_channel(saved_card_channel_id) is not None:
+                                    player.nowplaying_channel_id = saved_card_channel_id
                                 rejoined_count += 1
-                                if s.restore_queue:
-                                    snapshot = await self.storage.get_queue_snapshot(guild.id)
-                                    if snapshot:
-                                        has_avatar_fn = hasattr(self.backend, "bot_avatar_url")
-                                        bot_avatar = self.backend.bot_avatar_url() if has_avatar_fn else None
-                                        bot_id = self.backend.bot_id() if hasattr(self.backend, "bot_id") else 0
-                                        chunk_size = 500
-                                        total_for_guild = 0
-                                        for i in range(0, len(snapshot), chunk_size):
-                                            chunk = snapshot[i : i + chunk_size]
-                                            items = [
-                                                (
-                                                    QueueItem.from_spotify(
-                                                        t,
-                                                        t.requester_id or bot_id,
-                                                        requester_avatar_url=bot_avatar,
-                                                    )
-                                                    if parse_spotify_url(t.uri)
-                                                    else QueueItem(
-                                                        track=None,
-                                                        title=t.title,
-                                                        duration_ms=t.duration_ms,
-                                                        requester_id=t.requester_id or bot_id,
-                                                        artist=t.artist,
-                                                        uri=t.uri,
-                                                        query=t.uri,
-                                                        requester_avatar_url=bot_avatar,
-                                                    )
+                                if should_restore:
+                                    has_avatar_fn = hasattr(self.backend, "bot_avatar_url")
+                                    bot_avatar = self.backend.bot_avatar_url() if has_avatar_fn else None
+                                    bot_id = self.backend.bot_id() if hasattr(self.backend, "bot_id") else 0
+                                    chunk_size = 500
+                                    total_for_guild = 0
+                                    for i in range(0, len(snapshot), chunk_size):
+                                        chunk = snapshot[i : i + chunk_size]
+                                        items = [
+                                            (
+                                                QueueItem.from_spotify(
+                                                    t,
+                                                    t.requester_id or bot_id,
+                                                    requester_avatar_url=bot_avatar,
                                                 )
-                                                for t in chunk
-                                            ]
-                                            await player.enqueue(items)
-                                            total_for_guild += len(items)
-                                            if i + chunk_size < len(snapshot):
-                                                await asyncio.sleep(0)
-                                        await self.storage.delete_queue_snapshot(guild.id)
-                                        restored_tracks += total_for_guild
-                                        restored_guilds += 1
-                                        if total_guilds <= 100:
-                                            log.info("guild=%s restored %d tracks from snapshot", guild.id, total_for_guild)
+                                                if parse_spotify_url(t.uri)
+                                                else QueueItem(
+                                                    track=None,
+                                                    title=t.title,
+                                                    duration_ms=t.duration_ms,
+                                                    requester_id=t.requester_id or bot_id,
+                                                    artist=t.artist,
+                                                    uri=t.uri,
+                                                    query=t.uri,
+                                                    requester_avatar_url=bot_avatar,
+                                                )
+                                            )
+                                            for t in chunk
+                                        ]
+                                        first_restored_item = items[0] if i == 0 else None
+                                        result = await player.enqueue(items)
+                                        total_for_guild += int(getattr(result, "added", len(items)))
+                                        if i == 0 and snapshot[0].position_ms > 0:
+                                            current = getattr(player, "current", None)
+                                            if current is first_restored_item:
+                                                await player.seek(snapshot[0].position_ms // 1000)
+                                        if i + chunk_size < len(snapshot):
+                                            await asyncio.sleep(0)
+                                    # Delete only after both the connection and all
+                                    # queue chunks have been accepted. Failed
+                                    # restores remain available for the next boot.
+                                    await self.storage.delete_queue_snapshot(guild.id)
+                                    # Rebuild the cleared card even if Lavalink's
+                                    # track-start event arrived during restoration.
+                                    if player.current is not None:
+                                        try:
+                                            await player.create_card()
+                                        except Exception:
+                                            log.warning(
+                                                "guild=%s queue restored but now-playing card could not be recreated",
+                                                guild.id,
+                                                exc_info=True,
+                                            )
+                                    restored_tracks += total_for_guild
+                                    restored_guilds += 1
+                                    if total_guilds <= 100:
+                                        log.info("guild=%s restored %d tracks from snapshot", guild.id, total_for_guild)
                 except Exception as exc:
                     log.debug("guild=%s 24/7 rejoin failed: %s", guild.id, exc)
 
@@ -587,10 +620,6 @@ class MusicBot(commands.AutoShardedBot):
 
     async def close(self) -> None:
         if self._shutdown_task is None:
-            current_task = asyncio.current_task()
-            if current_task is not None:
-                while current_task.cancelling() > 0:
-                    current_task.uncancel()
             self._shutdown_task = asyncio.create_task(self._do_close())
 
         try:
@@ -612,7 +641,8 @@ class MusicBot(commands.AutoShardedBot):
 
     async def _graceful_shutdown(self) -> None:
         log.info("Shutting down")
-        await self._step("stop background tasks", self.supervisor.stop_all())
+        deadline = time.monotonic() + SHUTDOWN_TOTAL_TIMEOUT
+        await self._step("stop background tasks", self.supervisor.stop_all(), deadline=deadline)
 
         if not self.is_closed():
             try:
@@ -625,29 +655,40 @@ class MusicBot(commands.AutoShardedBot):
                 log.debug("Failed setting offline presence: %s", exc)
 
         from utils.components_v2 import ACTIVE_VIEWS
-        await self._step("close active views", ACTIVE_VIEWS.close_all())
+        await self._step("close active views", ACTIVE_VIEWS.close_all(), deadline=deadline)
         voice_status = getattr(self, "voice_status", None)
         if voice_status is not None:
-            await self._step("clear voice statuses", voice_status.clear_all_shutdown(timeout=5.0))
+            # Status cleanup is best effort and must not make Ctrl+C wait on
+            # slow Discord REST responses before we save queues and disconnect.
+            await self._step("clear voice statuses", voice_status.clear_all_shutdown(timeout=2.0), deadline=deadline)
         registry = getattr(self, "registry", None)
         if registry is not None:
             registry.stop_background_tasks()
-            await self._step("destroy players", registry.destroy_all("shutdown"))
+            await self._step("wait for registry tasks", registry.wait_background_tasks(), deadline=deadline)
+            await self._step("destroy players", registry.destroy_all("shutdown"), deadline=deadline)
         lavalink_client = getattr(self, "lavalink", None)
         if lavalink_client is not None:
-            await self._step("close lavalink client", lavalink_client.close())
+            await self._step("close lavalink client", lavalink_client.close(), deadline=deadline)
         storage = getattr(self, "storage", None)
         if storage is not None:
-            await self._step("close storage", storage.close())
+            await self._step("close storage", storage.close(), deadline=deadline)
         spotify = getattr(self, "spotify", None)
         if spotify is not None:
-            await self._step("close spotify service", spotify.close())
-        await self._step("close alerter", self.alerter.close())
+            await self._step("close spotify service", spotify.close(), deadline=deadline)
+        await self._step("close alerter", self.alerter.close(), deadline=deadline)
 
     @staticmethod
-    async def _step(label: str, work: Any) -> None:
+    async def _step(label: str, work: Any, *, deadline: float | None = None) -> None:
+        timeout = SHUTDOWN_STEP_TIMEOUT
+        if deadline is not None:
+            timeout = min(timeout, max(0.0, deadline - time.monotonic()))
+        if timeout <= 0:
+            if asyncio.iscoroutine(work):
+                work.close()
+            log.error("Shutdown deadline expired before step: %s", label)
+            return
         try:
-            await asyncio.wait_for(asyncio.shield(work), timeout=SHUTDOWN_STEP_TIMEOUT)
+            await asyncio.wait_for(work, timeout=timeout)
         except asyncio.TimeoutError:
             log.warning("Shutdown step timed out: %s", label)
         except asyncio.CancelledError:

@@ -621,7 +621,7 @@ def max_duration_set(minutes: int) -> str:
 
 def max_queue_set(count: int) -> str:
     if count <= 0:
-        return "Set max queue to **Unlimited**"
+        return "Set max queue to **the bot default**"
     return f"Set max queue to **{count} tracks**"
 
 
@@ -633,7 +633,7 @@ def restrict_channel_set(channel_id: int | None) -> str:
 
 def restore_queue_toggled(enabled: bool) -> str:
     state = "enabled" if enabled else "disabled"
-    return f"Restore queue **{state}**"
+    return f"Crash recovery queue checkpoints **{state}**"
 
 
 def mode_247_toggled(enabled: bool, channel_id: int | None = None) -> str:

@@ -639,6 +639,7 @@ def test_graceful_shutdown_sets_offline_and_saves_queues():
         bot.supervisor.stop_all = AsyncMock()
         bot.registry = MagicMock()
         bot.registry.stop_background_tasks = MagicMock()
+        bot.registry.wait_background_tasks = AsyncMock()
         bot.registry.destroy_all = AsyncMock()
         bot.storage = MagicMock()
         bot.storage.close = AsyncMock()
@@ -678,6 +679,7 @@ def test_graceful_shutdown_cancellation_resilient():
         bot.supervisor.stop_all = AsyncMock(side_effect=asyncio.CancelledError())
         bot.registry = MagicMock()
         bot.registry.stop_background_tasks = MagicMock()
+        bot.registry.wait_background_tasks = AsyncMock()
         bot.registry.destroy_all = AsyncMock()
         bot.storage = MagicMock()
         bot.storage.close = AsyncMock()
@@ -706,9 +708,11 @@ def test_player_save_snapshot_now():
         loader = FakeLoader()
         storage = MagicMock()
         storage.save_queue_snapshot = AsyncMock()
+        storage.delete_queue_snapshot = AsyncMock()
         services = PlayerServices(cfg, backend, loader, storage)
 
         player = GuildPlayer(12345, 100, 200, services)
+        player.restore_queue_enabled = True
         player.current = QueueItem(track=None, title="Current Song", artist="Artist 1", duration_ms=180000, requester_id=999, uri="https://youtube.com/watch?v=curr")
         player.queue.add(QueueItem(track=None, title="Queued Song", artist="Artist 2", duration_ms=200000, requester_id=888, uri="https://youtube.com/watch?v=next"))
 
@@ -723,6 +727,62 @@ def test_player_save_snapshot_now():
 
     asyncio.run(scenario())
 
+
+def test_empty_snapshot_clears_stale_persisted_queue():
+    async def scenario():
+        from core.guild_player import GuildPlayer
+        from tests.fakes import FakeBackend, FakeLoader
+
+        storage = MagicMock()
+        storage.save_queue_snapshot = AsyncMock()
+        storage.delete_queue_snapshot = AsyncMock()
+        services = PlayerServices(make_config(), FakeBackend(), FakeLoader(), storage)
+        player = GuildPlayer(777, 10, 20, services)
+        player.restore_queue_enabled = True
+
+        await player.save_snapshot_now()
+
+        storage.delete_queue_snapshot.assert_awaited_once_with(777)
+        storage.save_queue_snapshot.assert_not_awaited()
+
+    asyncio.run(scenario())
+
+
+def test_forced_shutdown_snapshot_records_exact_voice_channel_and_position():
+    async def scenario():
+        from types import SimpleNamespace
+
+        from core.guild_player import GuildPlayer
+        from core.queue import QueueItem
+        from tests.fakes import FakeLoader
+
+        backend = MagicMock()
+        backend.voice_connected.return_value = True
+        backend.audio.return_value = SimpleNamespace(position=12_500)
+        storage = MagicMock()
+        storage.save_queue_snapshot = AsyncMock()
+        storage.delete_queue_snapshot = AsyncMock()
+        services = PlayerServices(make_config(), backend, FakeLoader(), storage)
+        player = GuildPlayer(999, 456, 789, services)
+        player.current = QueueItem(
+            track=None,
+            title="Now playing",
+            artist="Artist",
+            duration_ms=100_000,
+            requester_id=123,
+            uri="https://youtu.be/playing",
+        )
+
+        await player.save_snapshot_now(force=True, seal=True)
+
+        storage.save_queue_snapshot.assert_awaited_once()
+        saved_tracks = storage.save_queue_snapshot.await_args.args[1]
+        assert saved_tracks[0].position_ms == 12_500
+        assert storage.save_queue_snapshot.await_args.kwargs["voice_channel_id"] == 456
+        assert storage.save_queue_snapshot.await_args.kwargs["card_channel_id"] == 789
+        assert player.destroyed is True
+
+    asyncio.run(scenario())
 
 def test_wrong_channel_preserves_channel_id_and_mentions_vc():
     from utils import messages

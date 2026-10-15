@@ -84,6 +84,17 @@ def test_scheduler_cancel_guild():
     asyncio.run(scenario())
 
 
+def test_scheduler_compacts_repeatedly_rescheduled_timers():
+    async def on_expire(_guild_id: int, _reason: str) -> None:
+        return
+
+    scheduler = CentralScheduler(on_expire)
+    for idx in range(5000):
+        scheduler.schedule(1, "idle", 3600 + idx, "idle")
+    assert scheduler.active_count == 1
+    assert len(scheduler._heap) <= 64
+
+
 def test_card_flusher_latest_wins():
     """Verify CardFlusher updates pending cards at steady cadence with latest-wins."""
     async def scenario():

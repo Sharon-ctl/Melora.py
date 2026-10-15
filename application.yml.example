@@ -51,6 +51,9 @@ lavalink:
 
     youtubeSearchEnabled: true
     soundcloudSearchEnabled: true
+    # Three pages of 100 keep playlist REST responses bounded; the bot then
+    # applies its own MAX_PLAYLIST_TRACKS limit before queue insertion.
+    youtubePlaylistLoadLimit: 3
     gc-warnings: true
 
 plugins:
@@ -59,8 +62,6 @@ plugins:
     allowSearch: true
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
-    # MUSIC = ytmsearch, WEB = metadata only, TV = the only client that plays audio.
-    # If TV ever breaks, re-add ANDROID_VR and WEBEMBEDDED here as fallbacks.
     clients:
       - MUSIC
       - WEB

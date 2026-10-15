@@ -48,7 +48,9 @@ class LavalinkService:
         self._semaphore = asyncio.Semaphore(cfg.max_concurrent_loads)
         self._per_guild_concurrency = getattr(cfg, "per_guild_concurrent_loads", 4)
         self._slots: dict[int, list[Any]] = {}
-        self._cache: TTLCache[str, LoadResult] = TTLCache(max_size=2000, ttl=300.0)
+        # Each LoadResult may contain an entire playlist. Bound by query count,
+        # and only retain results small enough to have predictable memory cost.
+        self._cache: TTLCache[str, LoadResult] = TTLCache(max_size=256, ttl=300.0)
         self._negative_cache: TTLCache[str, Exception] = TTLCache(max_size=1000, ttl=30.0)
         self._flight: dict[str, asyncio.Future[LoadResult]] = {}
 
@@ -147,7 +149,8 @@ class LavalinkService:
                     raise exc
 
                 # Cache positive result
-                self._cache.set(identifier, result)
+                if len(result.tracks) <= min(self._cfg.max_playlist_tracks, 250):
+                    self._cache.set(identifier, result)
                 if not flight_fut.done():
                     flight_fut.set_result(result)
                 return result
