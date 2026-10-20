@@ -33,10 +33,7 @@ from utils import messages
 
 async def stop_flusher(manager: VoiceStatusManager, task: asyncio.Task[Any]) -> None:
     manager.stop()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    await task
 
 
 class FakeVoiceChannel:

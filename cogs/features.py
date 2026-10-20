@@ -344,8 +344,8 @@ class Features(commands.Cog):
             task.cancel()
             try:
                 await message.delete()
-            except discord.HTTPException:
-                pass
+            except discord.HTTPException as exc:
+                log.debug("guild=%s karaoke message cleanup failed: %s", guild_id, type(exc).__name__)
             await interaction.followup.send("Karaoke mode disabled.", ephemeral=True)
             return
         current = getattr(player, "current", None)
@@ -368,7 +368,7 @@ class Features(commands.Cog):
                 await interaction.followup.send("Karaoke needs a message channel.", ephemeral=True)
                 return
             message = await channel.send(
-                f"**Live Karaoke · {truncate(current.title)}**\n{discord.utils.escape_mentions(timed[0][1])}",
+                f"**Live Karaoke - {truncate(current.title)}**\n{discord.utils.escape_mentions(timed[0][1])}",
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             task = self.bot.supervisor.spawn(
@@ -377,8 +377,8 @@ class Features(commands.Cog):
             if task is None:
                 try:
                     await message.delete()
-                except discord.HTTPException:
-                    pass
+                except discord.HTTPException as exc:
+                    log.debug("guild=%s karaoke message cleanup failed: %s", guild_id, type(exc).__name__)
                 await interaction.followup.send("Karaoke is unavailable right now.", ephemeral=True)
                 return
             self._karaoke[guild_id] = (message, task)
@@ -415,7 +415,7 @@ class Features(commands.Cog):
                 current = player.current
                 if current is None:
                     if not waiting_shown:
-                        await message.edit(content="**Live Karaoke**\nWaiting for the next track…")
+                        await message.edit(content="**Live Karaoke**\nWaiting for the next track...")
                         waiting_shown = True
                     await asyncio.sleep(5)
                     continue
@@ -428,7 +428,7 @@ class Features(commands.Cog):
                     node = node_manager.find_ideal_node() if node_manager else None
                     lines = await self._fetch_timed_lyrics(node, encoded) if node and encoded else []
                     if not lines:
-                        await message.edit(content=f"**Live Karaoke · {truncate(current.title)}**\nNo timed lyrics found.")
+                        await message.edit(content=f"**Live Karaoke - {truncate(current.title)}**\nNo timed lyrics found.")
                         await asyncio.sleep(5)
                         continue
                 position = int(getattr(player.audio, "position", 0) or 0)
@@ -440,7 +440,7 @@ class Features(commands.Cog):
                         ("**" if i == index else "") + discord.utils.escape_mentions(line) + ("**" if i == index else "")
                         for i, (_, line) in enumerate(snippets, start=max(0, index - 1))
                     )
-                    await message.edit(content=f"**Live Karaoke · {truncate(current.title)}**\n{body}")
+                    await message.edit(content=f"**Live Karaoke - {truncate(current.title)}**\n{body}")
                 await asyncio.sleep(5)
         except asyncio.CancelledError:
             raise
@@ -452,8 +452,8 @@ class Features(commands.Cog):
                 self._karaoke.pop(guild_id, None)
             try:
                 await message.delete()
-            except discord.HTTPException:
-                pass
+            except discord.HTTPException as exc:
+                log.debug("guild=%s karaoke message cleanup failed: %s", guild_id, type(exc).__name__)
 
 
 async def setup(bot: MusicBot) -> None:

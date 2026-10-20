@@ -491,7 +491,7 @@ class Admin(commands.Cog):
 
         status_text = "\n".join(lines)
         if len(status_text) > 3900:
-            status_text = status_text[:3850].rsplit("\n", 1)[0] + "\n… Additional diagnostic details omitted."
+            status_text = status_text[:3850].rsplit("\n", 1)[0] + "\n... Additional diagnostic details omitted."
         text_disp = TextDisplay(status_text)
         container = create_card_container(text_disp)
         view = BaseCardView(timeout=60.0, author_id=interaction.user.id)

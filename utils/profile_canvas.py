@@ -37,9 +37,9 @@ def _fit(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, width:
     text = str(text).replace("\n", " ").strip()
     if draw.textbbox((0, 0), text, font=font)[2] <= width:
         return text
-    while text and draw.textbbox((0, 0), text + "…", font=font)[2] > width:
+    while text and draw.textbbox((0, 0), text + "...", font=font)[2] > width:
         text = text[:-1]
-    return text.rstrip() + "…"
+    return text.rstrip() + "..."
 
 
 def render_profile(
@@ -123,7 +123,7 @@ def render_stats(
             ImageDraw.Draw(mask).ellipse((0, 0, 95, 95), fill=255)
             image.paste(face, (54, 22), mask)
         except (OSError, ValueError):
-            pass
+            draw.ellipse((54, 22, 150, 118), fill=(255, 255, 255, 230))
     title_font = _font(34, bold=True)
     draw.text((170, 35), _fit(draw, display_name, title_font, 580), fill=INK, font=title_font)
     draw.text((170, 79), "Listening Stats", fill=MUTED, font=_font(22))
@@ -152,7 +152,7 @@ def render_stats(
     if tracks:
         for i, (title, artist, plays) in enumerate(tracks[:4], start=1):
             y = 310 + (i - 1) * 34
-            label = f"{title} — {artist}" if artist else title
+            label = f"{title} - {artist}" if artist else title
             draw.text((442, y), _fit(draw, f"{i}. {label}", body_font, 225), fill=INK, font=body_font)
             draw.text((690, y), str(plays), fill=ACCENT, font=body_font)
     else:
