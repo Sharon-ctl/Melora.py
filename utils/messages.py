@@ -15,6 +15,7 @@ Rules enforced:
   may use two lines at most.
 - ASCII plus bullet (U+2022) only.
 """
+
 from __future__ import annotations
 
 import re
@@ -686,7 +687,11 @@ def commands_synced(count: int) -> str:
 
 
 def privacy_policy() -> str:
-    return "Stored data • `Titles and links of requested tracks (max 50 per user across servers); use /reset to delete`"
+    return (
+        "Stored data • `Titles and links of requested tracks (max 50 per user across servers), favorites, playlists, "
+        "playlist sharing permissions, and qualified listening totals with ranked tracks; /reset to delete your data "
+        "and revoke playlists shared with you.`"
+    )
 
 
 def reset_prompt() -> str:
@@ -694,7 +699,7 @@ def reset_prompt() -> str:
 
 
 def reset_confirmed() -> str:
-    return "Deleted personal data • `Favorites and playlists removed`"
+    return "Deleted personal data • `Favorites, playlists, recent tracks, listening stats, and incoming shares removed`"
 
 
 def reset_cancelled() -> str:
@@ -792,4 +797,3 @@ def voice_status_toggled(enabled: bool) -> str:
     """Settings feedback when voice status is toggled."""
     state = "Enabled" if enabled else "Disabled"
     return f"Updated **Voice channel status** • `{state}`"
-

@@ -99,7 +99,10 @@ class LavalinkService:
         # Single-flight deduplication: reuse in-flight future if identical load is pending
         fut = self._flight.get(identifier)
         if fut is not None:
-            return await fut
+            # A cancelled waiter must not cancel the shared future for every other
+            # guild requesting the same track. The task that owns the load still
+            # controls whether the shared result itself completes or is cancelled.
+            return await asyncio.shield(fut)
 
         loop = asyncio.get_running_loop()
         flight_fut: asyncio.Future[LoadResult] = loop.create_future()

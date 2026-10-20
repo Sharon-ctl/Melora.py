@@ -31,6 +31,14 @@ from tests.fakes import make_config
 from utils import messages
 
 
+async def stop_flusher(manager: VoiceStatusManager, task: asyncio.Task[Any]) -> None:
+    manager.stop()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
 class FakeVoiceChannel:
     def __init__(self, channel_id: int = 1234, name: str = "Voice Chat") -> None:
         self.id = channel_id
@@ -152,8 +160,7 @@ def test_voice_status_flusher_coalescing_and_dedupe():
         # Flusher tick
         flusher_task = asyncio.create_task(mgr.run())
         await asyncio.sleep(0.6)
-        mgr.stop()
-        await flusher_task
+        await stop_flusher(mgr, flusher_task)
 
         # Coalesced to latest (Song B)
         assert len(channel.edit_calls) == 1
@@ -199,8 +206,7 @@ def test_voice_status_minimum_interval_and_load_shedding():
         mgr.set_load_shedding(True)
         assert mgr._load_shedding is True
 
-        mgr.stop()
-        await flusher_task
+        await stop_flusher(mgr, flusher_task)
 
     asyncio.run(scenario())
 
@@ -243,8 +249,7 @@ def test_voice_status_missing_permission_skips_and_diagnostics():
         assert len(channel.edit_calls) == 1
         assert mgr.missing_permission_count == 0
 
-        mgr.stop()
-        await flusher_task
+        await stop_flusher(mgr, flusher_task)
 
     asyncio.run(scenario())
 
@@ -286,8 +291,7 @@ def test_voice_status_emoji_400_fallback():
         mgr.request_update(4, player)
         flusher_task = asyncio.create_task(mgr.run())
         await asyncio.sleep(0.6)
-        mgr.stop()
-        await flusher_task
+        await stop_flusher(mgr, flusher_task)
 
         # Remembered for guild 4
         assert 4 in mgr._emoji_disabled_guilds
@@ -321,8 +325,7 @@ def test_voice_status_429_backoff_without_blocking():
         assert mgr._backoff_until[5] > 0
         assert len(channel.edit_calls) == 0
 
-        mgr.stop()
-        await flusher_task
+        await stop_flusher(mgr, flusher_task)
 
     asyncio.run(scenario())
 

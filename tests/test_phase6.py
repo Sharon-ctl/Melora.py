@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import pytest
 
-from core.storage import Storage, StoredTrack
+from core.storage import Storage, StoredTrack, StorageError
 from scripts.export_json import export_database
 from utils.errors import ErrorRingBuffer
 
@@ -111,6 +111,63 @@ async def test_delete_guild_data_and_user_reset(tmp_path: Path):
         assert favs_after == []
         pls_after = await store.list_playlists(user_id)
         assert pls_after == []
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_shared_playlist_is_read_only_for_recipient(tmp_path: Path):
+    store = Storage(tmp_path / "shared.db")
+    store.start()
+    owner_id, recipient_id = 101, 202
+    original = StoredTrack(uri="https://example.test/one", title="One", artist="Artist", duration_ms=60_000)
+    try:
+        await store.create_playlist(owner_id, "Favorites", limit=10)
+        await store.add_playlist_track(owner_id, "Favorites", original, limit=10)
+        await store.share_playlist(owner_id, "Favorites", recipient_id)
+
+        shared = await store.get_shared_playlist_tracks(recipient_id, owner_id, "Favorites")
+        assert shared == [original]
+        with pytest.raises(StorageError, match="Playlist not found"):
+            await store.add_playlist_track(recipient_id, "Favorites", original, limit=10)
+        with pytest.raises(StorageError, match="Playlist not found"):
+            await store.remove_playlist_track(recipient_id, "Favorites", 1)
+        assert await store.get_shared_playlist_tracks(recipient_id, owner_id, "Favorites") == [original]
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_listening_stats_retains_most_recent_track_on_count_tie(tmp_path: Path):
+    store = Storage(tmp_path / "stats.db")
+    store.start()
+    try:
+        await store.record_user_listening_stats(303, "Zulu", "Artist", 30_000, max_tracks=1)
+        await store.record_user_listening_stats(303, "Alpha", "Artist", 30_000, max_tracks=1)
+        stats = await store.get_user_listening_stats(303)
+        assert stats["tracks"] == [("Alpha", "Artist", 1)]
+
+        await store.record_user_listening_stats(303, "Zulu", "Artist", 30_000, max_tracks=1)
+        await store.record_user_listening_stats(303, "Zulu", "Artist", 30_000, max_tracks=1)
+        stats = await store.get_user_listening_stats(303)
+        assert stats["tracks"] == [("Zulu", "Artist", 2)]
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_listening_stats_new_track_can_build_count_when_history_is_full(tmp_path: Path):
+    store = Storage(tmp_path / "full_stats.db")
+    store.start()
+    try:
+        for title in ("Alpha", "Beta"):
+            await store.record_user_listening_stats(404, title, "Artist", 30_000, max_tracks=2)
+            await store.record_user_listening_stats(404, title, "Artist", 30_000, max_tracks=2)
+
+        await store.record_user_listening_stats(404, "Zulu", "Artist", 30_000, max_tracks=2)
+        await store.record_user_listening_stats(404, "Zulu", "Artist", 30_000, max_tracks=2)
+        stats = await store.get_user_listening_stats(404)
+        assert ("Zulu", "Artist", 2) in stats["tracks"]
     finally:
         await store.close()
 

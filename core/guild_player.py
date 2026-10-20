@@ -4,10 +4,12 @@ A GuildPlayer holds only IDs and plain values, never Discord objects, so a
 destroyed player can be garbage collected immediately. All its tasks live in
 its own TaskSet and are cancelled when it is shut down.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
@@ -20,6 +22,7 @@ from core.filters import get_filter_types_for_preset, validate_and_build_eq, val
 from core.matching import SpotifyResolver
 from core.queue import LoopMode, QueueItem, TrackQueue, validate_track
 from core.storage import StoredTrack
+from core.spotify import parse_spotify_url
 from utils import messages
 from utils.errors import BotUserError, NodeOffline, NothingPlaying, QueueFull, TrackTooLong, UserLimitReached
 from utils.supervisor import TaskSet
@@ -72,12 +75,18 @@ class GuildPlayer:
         self.votes: set[int] = set()
         self.autoplay = False
         self.autoplay_failures = 0
+        self.random_play = False
+        self.random_play_failures = 0
+        self.random_play_source = "history"
+        self.random_play_user_id = 0
         self.lock = asyncio.Lock()
         self.tasks = TaskSet(f"guild-{guild_id}", max_tasks=32)
         self.created_at = time.monotonic()
         self.started_at = 0.0
         self.paused_total = 0.0
         self.paused_since: float | None = None
+        self._listen_started_at: float | None = None
+        self._listen_accumulated_ms = 0
         self._timers: dict[str, asyncio.Task[Any]] = {}
         self._end_handled = True
         self._expire_callback = expire_callback
@@ -412,6 +421,9 @@ class GuildPlayer:
         self.started_at = time.monotonic()
         self.paused_total = 0.0
         self.paused_since = None
+        self._listen_started_at = self.started_at
+        self._listen_accumulated_ms = 0
+        self.random_play_failures = 0
         self.paused = False
         self._schedule_preload_next()
         self._schedule_autoplay_near_end()
@@ -478,11 +490,7 @@ class GuildPlayer:
                 for item in self.queue:
                     seen.add(clean_track_title(item.title).lower())
 
-                bot_avatar = (
-                    self.services.backend.bot_avatar_url()
-                    if hasattr(self.services.backend, "bot_avatar_url")
-                    else None
-                )
+                bot_avatar = self.services.backend.bot_avatar_url() if hasattr(self.services.backend, "bot_avatar_url") else None
                 bot_id = self.services.backend.bot_id() if hasattr(self.services.backend, "bot_id") else 0
                 req_id = expected_item.requester_id if expected_item.requester_id else bot_id
                 req_avatar = expected_item.requester_avatar_url or bot_avatar
@@ -492,9 +500,7 @@ class GuildPlayer:
                     if t_title.lower() not in seen:
                         try:
                             validate_track(t, self.cfg.max_track_seconds)
-                            auto_item = QueueItem.from_track(
-                                t, req_id, requester_avatar_url=req_avatar, is_autoplay=True
-                            )
+                            auto_item = QueueItem.from_track(t, req_id, requester_avatar_url=req_avatar, is_autoplay=True)
                             if len(self.queue) == 0 or not self.queue.has_user_items():
                                 self.queue.remove_autoplay_items()
                                 self.queue.add(auto_item)
@@ -534,11 +540,7 @@ class GuildPlayer:
             for item in self.queue:
                 seen.add(clean_track_title(item.title).lower())
 
-            bot_avatar = (
-                self.services.backend.bot_avatar_url()
-                if hasattr(self.services.backend, "bot_avatar_url")
-                else None
-            )
+            bot_avatar = self.services.backend.bot_avatar_url() if hasattr(self.services.backend, "bot_avatar_url") else None
             bot_id = self.services.backend.bot_id() if hasattr(self.services.backend, "bot_id") else 0
             requester_id = last_track.requester_id if last_track and last_track.requester_id else bot_id
             last_avatar = last_track.requester_avatar_url if last_track else None
@@ -550,9 +552,7 @@ class GuildPlayer:
                 if t_title.lower() not in seen:
                     try:
                         validate_track(t, self.cfg.max_track_seconds)
-                        candidate = QueueItem.from_track(
-                            t, requester_id, requester_avatar_url=requester_avatar, is_autoplay=True
-                        )
+                        candidate = QueueItem.from_track(t, requester_id, requester_avatar_url=requester_avatar, is_autoplay=True)
                         break
                     except TrackTooLong:
                         continue
@@ -570,16 +570,80 @@ class GuildPlayer:
             self.autoplay_failures += 1
         return False
 
+    async def _try_random_locked(self, last_track: QueueItem | None) -> bool:
+        if not self.random_play or self.destroyed:
+            return False
+        if self.random_play_failures >= 3:
+            log.info("guild=%s disabling random playback after repeated failures", self.guild_id)
+            self.set_random_play(False)
+            self.notify_soon("Continuous random playback stopped after repeated track loading failures.")
+            return False
+        self.random_play_failures += 1
+        storage = self.services.storage
+        if storage is None:
+            self.random_play = False
+            return False
+        try:
+            candidates = (
+                await storage.get_favorites(self.random_play_user_id)
+                if self.random_play_source == "favorites"
+                else await storage.get_recent_bot_history_tracks(self.random_play_user_id, 200)
+            )
+        except Exception as exc:
+            log.warning("guild=%s random playback lookup failed: %s", self.guild_id, type(exc).__name__)
+            self.random_play = False
+            return False
+        if not candidates:
+            self.random_play = False
+            self.notify_soon("Continuous random playback stopped because its source has no tracks.")
+            return False
+        if len(candidates) > 1 and last_track is not None:
+            candidates = [
+                track
+                for track in candidates
+                if track.uri != last_track.uri and (track.title, track.artist) != (last_track.title, last_track.artist)
+            ] or candidates
+        stored = random.choice(candidates)
+        requester_id = self.random_play_user_id
+        if parse_spotify_url(stored.uri):
+            item = QueueItem.from_spotify(stored, requester_id)
+        else:
+            item = QueueItem(
+                None,
+                stored.title,
+                stored.duration_ms,
+                requester_id,
+                artist=stored.artist,
+                uri=stored.uri,
+                query=stored.uri or f"ytsearch:{stored.artist} - {stored.title}",
+                is_autoplay=True,
+            )
+        return await self._play_item_locked(item)
+
+    def set_random_play(self, enabled: bool, *, source: str = "history", user_id: int = 0) -> None:
+        self.random_play = enabled
+        self.random_play_failures = 0
+        self.random_play_source = source if source in ("favorites", "history") else "history"
+        self.random_play_user_id = user_id
+        if not enabled:
+            self.random_play_source = "history"
+            self.random_play_user_id = 0
+
     async def _advance_locked(self, *, skipped: bool = False, failed: bool = False) -> bool:
         """Move to the next track. Returns True if a track was started."""
         self.votes.clear()
         self.cancel_autoplay()
         previous = self.current
+        if previous is not None and not failed:
+            self._record_qualified_listen(previous)
         self.current = None
         item = self.queue.next_item(previous, skipped=skipped, failed=failed)
         if item is None:
-            if not failed and await self._try_autoplay_locked(previous):
-                return True
+            if not failed:
+                if await self._try_random_locked(previous):
+                    return True
+                if await self._try_autoplay_locked(previous):
+                    return True
             self._end_handled = True
             await self._stop_audio_locked()
             self.start_timer("idle", self.cfg.idle_timeout, "idle")
@@ -738,9 +802,7 @@ class GuildPlayer:
                 query = " ".join(part for part in (item.artist, item.title) if part).strip()
             if not query:
                 return None
-            track = await self.services.loader.load_first_with_source(
-                self.guild_id, self.cfg.fallback_search_source, query
-            )
+            track = await self.services.loader.load_first_with_source(self.guild_id, self.cfg.fallback_search_source, query)
             validate_track(track, self.cfg.max_track_seconds)
             return track
         except asyncio.CancelledError:
@@ -758,11 +820,7 @@ class GuildPlayer:
         self._end_handled = True
         log.warning("guild=%s track failed (%s): %s", self.guild_id, why, truncate(item.title, 80))
         cfg = self.cfg
-        if (
-            item.query
-            and not item.fallback_used
-            and cfg.fallback_search_source != cfg.default_search_source
-        ):
+        if item.query and not item.fallback_used and cfg.fallback_search_source != cfg.default_search_source:
             item.fallback_used = True
             replacement = await self._load_fallback(item)
             if replacement is not None:
@@ -806,8 +864,28 @@ class GuildPlayer:
             self._end_handled = True
             if reason == "loadFailed":
                 await self._handle_failure_locked(self.current, "load failed")
-            else:
+            elif reason == "finished":
                 await self._advance_locked()
+
+    def _record_qualified_listen(self, item: QueueItem) -> None:
+        cfg = self.services.cfg
+        if item.requester_id <= 0 or not getattr(cfg, "user_history_enabled", True):
+            return
+        duration_ms = max(0, int(item.duration_ms or 0))
+        elapsed_ms = self._listen_accumulated_ms
+        if self._listen_started_at is not None:
+            elapsed_ms += max(0, int((time.monotonic() - self._listen_started_at) * 1000))
+        listened_ms = min(duration_ms, elapsed_ms) if duration_ms else elapsed_ms
+        # Match the reference bot: count a listen after 30 seconds or 40% of a track.
+        threshold_ms = min(30_000, int(duration_ms * 0.4)) if duration_ms else 30_000
+        if listened_ms < threshold_ms:
+            return
+        storage = self.services.storage
+        if storage is not None:
+            self.tasks.spawn(
+                storage.record_user_listening_stats(item.requester_id, item.title, item.artist or "", listened_ms),
+                name="listening-stats-write",
+            )
 
     async def on_track_exception(self, encoded: str | None, message: str | None) -> None:
         log.warning("guild=%s track exception: %s", self.guild_id, truncate(message or "unknown", 120))
@@ -873,8 +951,11 @@ class GuildPlayer:
         async with self.lock:
             if self.destroyed:
                 raise BotUserError("The player was closed. Try again.")
+            if self.current is not None:
+                self._record_qualified_listen(self.current)
             self.queue.clear()
             self.current = None
+            self.set_random_play(False)
             self._end_handled = True
             self.paused = False
             await self._stop_audio_locked()
@@ -896,6 +977,9 @@ class GuildPlayer:
             await self._audio_call(self._audio_or_raise().set_pause(True))
             self.paused = True
             self.paused_since = time.monotonic()
+            if self._listen_started_at is not None:
+                self._listen_accumulated_ms += max(0, int((self.paused_since - self._listen_started_at) * 1000))
+                self._listen_started_at = None
             self.start_timer("idle", self.cfg.idle_timeout, "idle")
         self.schedule_card_update()
         vs = getattr(self.services, "voice_status", None)
@@ -915,6 +999,7 @@ class GuildPlayer:
             if self.paused_since is not None:
                 self.paused_total += time.monotonic() - self.paused_since
                 self.paused_since = None
+            self._listen_started_at = time.monotonic()
             self.cancel_timer("idle")
         self.schedule_card_update()
         vs = getattr(self.services, "voice_status", None)
@@ -969,6 +1054,8 @@ class GuildPlayer:
                 raise BotUserError("The player was closed. Try again.")
             self.cancel_autoplay()
             self.queue.remove_autoplay_items()
+            if self.current is not None:
+                self._record_qualified_listen(self.current)
             self._end_handled = True
             await self._stop_audio_locked()
             started = await self._play_item_locked(item)
@@ -995,6 +1082,7 @@ class GuildPlayer:
             if prev is None:
                 raise BotUserError("No previous tracks in history.")
             if self.current is not None:
+                self._record_qualified_listen(self.current)
                 self.queue.push_front(self.current)
             self.current = None
             self._end_handled = True
@@ -1175,7 +1263,7 @@ class GuildPlayer:
 
             if candidates:
                 res = self.queue.add_many(candidates)
-                return candidates[:res.added]
+                return candidates[: res.added]
             return []
 
     def set_loop(self, mode: LoopMode) -> None:

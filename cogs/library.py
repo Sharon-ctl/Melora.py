@@ -1,4 +1,5 @@
 """Personal library commands: favorites and playlists."""
+
 from __future__ import annotations
 
 import asyncio
@@ -60,9 +61,7 @@ class Library(commands.Cog):
         self._tracks_cache.set(key, list(tracks))
         return list(tracks)
 
-    async def _playlist_name_autocomplete(
-        self, interaction: discord.Interaction, current: str
-    ) -> list[app_commands.Choice[str]]:
+    async def _playlist_name_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         try:
             if not interaction.guild or not interaction.guild_id:
                 return []
@@ -288,6 +287,29 @@ class Library(commands.Cog):
     # ------------------------------------------------------------- playlists
     playlist_group = app_commands.Group(name="playlist", description="Manage personal playlists")
 
+    @playlist_group.command(name="share", description="Share a playlist and let another user edit it")
+    @app_commands.guild_only()
+    async def playlist_share(self, interaction: discord.Interaction, name: str, member: discord.Member) -> None:
+        if member.id == interaction.user.id or member.bot:
+            await reply(interaction, "Choose another human user.", ephemeral=True)
+            return
+        await self.bot.storage.share_playlist(interaction.user.id, name, member.id)
+        await reply(
+            interaction,
+            f"Shared **{truncate(name)}** with {member.mention}. They can view, play, add, and remove tracks.",
+            ephemeral=True,
+        )
+
+    @playlist_group.command(name="unshare", description="Remove a user's playlist editing access")
+    @app_commands.guild_only()
+    async def playlist_unshare(self, interaction: discord.Interaction, name: str, member: discord.Member) -> None:
+        removed = await self.bot.storage.unshare_playlist(interaction.user.id, name, member.id)
+        await reply(
+            interaction,
+            "Playlist access removed." if removed else "That playlist was not shared with this user.",
+            ephemeral=True,
+        )
+
     @playlist_group.command(name="create", description="Create a new playlist")
     @app_commands.describe(name="Playlist name")
     @app_commands.guild_only()
@@ -298,9 +320,7 @@ class Library(commands.Cog):
             if self.bot.cfg.max_playlists_per_user > 0 and len(existing) >= self.bot.cfg.max_playlists_per_user:
                 raise BotUserError(messages.playlist_limit(self.bot.cfg.max_playlists_per_user))
 
-            await self.bot.storage.create_playlist(
-                interaction.user.id, clean_name, limit=self.bot.cfg.max_playlists_per_user
-            )
+            await self.bot.storage.create_playlist(interaction.user.id, clean_name, limit=self.bot.cfg.max_playlists_per_user)
             self._playlists_cache._data.pop(interaction.user.id, None)
             await reply(interaction, messages.playlist_created(clean_name), ephemeral=True)
         except StorageError:
@@ -444,9 +464,7 @@ class Library(commands.Cog):
         await reply_card(interaction, view, ephemeral=True)
 
     @playlist_view.autocomplete("name")
-    async def playlist_view_autocomplete(
-        self, interaction: discord.Interaction, current: str
-    ) -> list[app_commands.Choice[str]]:
+    async def playlist_view_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         return await self._playlist_name_autocomplete(interaction, current)
 
     @playlist_group.command(name="add", description="Add a track or current song to a playlist")
@@ -513,9 +531,7 @@ class Library(commands.Cog):
             await reply(interaction, messages.storage_unavailable(), ephemeral=True)
 
     @playlist_add.autocomplete("name")
-    async def playlist_add_autocomplete(
-        self, interaction: discord.Interaction, current: str
-    ) -> list[app_commands.Choice[str]]:
+    async def playlist_add_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         return await self._playlist_name_autocomplete(interaction, current)
 
     @playlist_group.command(name="remove", description="Remove a track from a playlist by index")
@@ -629,9 +645,7 @@ class Library(commands.Cog):
         await reply(interaction, messages.playlist_queued(clean_name, res.added, res.skipped))
 
     @playlist_play.autocomplete("name")
-    async def playlist_play_autocomplete(
-        self, interaction: discord.Interaction, current: str
-    ) -> list[app_commands.Choice[str]]:
+    async def playlist_play_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         return await self._playlist_name_autocomplete(interaction, current)
 
 

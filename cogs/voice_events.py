@@ -125,6 +125,8 @@ class VoiceEvents(commands.Cog):
     @guarded
     async def on_node_disconnected(self, event: NodeDisconnectedEvent) -> None:
         log.warning("Lavalink node %s disconnected (code=%s)", event.node.name, event.code)
+        if self.bot.supervisor.stopping or self.bot._shutdown_started:
+            return
         await self.bot.registry.handle_node_disconnected(event.node)
         if not self.bot.backend.any_node_available():
             self.bot.supervisor.start("node-loss-check", self._node_loss_check, restart=False)

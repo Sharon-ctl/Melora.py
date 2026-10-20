@@ -1,4 +1,5 @@
 """Administration and informational slash commands with Components V2 cards."""
+
 from __future__ import annotations
 
 import asyncio
@@ -173,9 +174,7 @@ class HelpView(BaseCardView):
         self.descriptions = descriptions
         self.commands_by_cat = commands_by_cat
         self.pages_by_cat = (
-            pages_by_cat
-            if pages_by_cat is not None
-            else precompute_help_pages(categories, descriptions, commands_by_cat)
+            pages_by_cat if pages_by_cat is not None else precompute_help_pages(categories, descriptions, commands_by_cat)
         )
         self.selected_category = "Overview"
         self.current_page = 1
@@ -273,6 +272,7 @@ class HelpView(BaseCardView):
 class Admin(commands.Cog):
     def __init__(self, bot: MusicBot) -> None:
         self.bot = bot
+        self._sync_task: asyncio.Task[list[app_commands.AppCommand]] | None = None
         self._help_cache: dict[str, list[str]] = {}
         self._help_categories: list[str] = []
         self._help_descriptions: dict[str, str] = {}
@@ -326,14 +326,25 @@ class Admin(commands.Cog):
     async def sync(self, interaction: discord.Interaction) -> None:
         if not await safe_defer(interaction, ephemeral=True):
             return
+        task = self._sync_task
+        if task is None or task.done():
+            task = asyncio.create_task(self.bot.tree.sync(), name="global-command-sync")
+            self._sync_task = task
         try:
-            synced = await asyncio.wait_for(self.bot.tree.sync(), timeout=SYNC_TIMEOUT)
-        except (discord.HTTPException, asyncio.TimeoutError):
+            global_synced = await asyncio.wait_for(asyncio.shield(task), timeout=SYNC_TIMEOUT)
+        except (discord.HTTPException, asyncio.TimeoutError, app_commands.CommandSyncFailure):
             log.exception("Command sync failed")
             raise BotUserError(messages.sync_failed()) from None
-        log.info("Synced %d commands on request", len(synced))
+        finally:
+            if task.done() and self._sync_task is task:
+                self._sync_task = None
+        log.info("Synced %d global commands on request", len(global_synced))
         self.rebuild_help_cache()
-        await reply(interaction, messages.commands_synced(len(synced)), ephemeral=True)
+        detail = (
+            f"Synced **{len(global_synced)} global commands**. "
+            "Discord may take some time to show global command changes in every server."
+        )
+        await reply(interaction, detail, ephemeral=True)
 
     @app_commands.command(name="status", description="Show bot and runtime status")
     @app_commands.guild_only()
@@ -345,9 +356,13 @@ class Admin(commands.Cog):
         lines: list[str] = [
             "### Melora Status",
             "",
+            f"**Servers:** `{len(self.bot.guilds)}`",
+            f"**Members:** `{sum(g.member_count or 0 for g in self.bot.guilds)}`",
             f"**Gateway Latency:** `{latency}`",
             f"**Uptime:** `{uptime}`",
             f"**Active Players:** `{stats.players}`",
+            f"**Queued Tracks:** `{stats.queued}`",
+            f"**Runtime Tasks:** `{stats.tasks}` total • `{stats.supervised}` supervised",
             "",
             "### Gateway Shards",
         ]
@@ -474,7 +489,10 @@ class Admin(commands.Cog):
                     tot_p = f"{s['total_p50_ms']}/{s['total_p95_ms']}ms"
                     lines.append(f"**/{cmd}:** `ack {ack_p}` • `total {tot_p}`")
 
-        text_disp = TextDisplay("\n".join(lines))
+        status_text = "\n".join(lines)
+        if len(status_text) > 3900:
+            status_text = status_text[:3850].rsplit("\n", 1)[0] + "\n… Additional diagnostic details omitted."
+        text_disp = TextDisplay(status_text)
         container = create_card_container(text_disp)
         view = BaseCardView(timeout=60.0, author_id=interaction.user.id)
         view.add_item(container)

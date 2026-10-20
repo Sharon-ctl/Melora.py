@@ -96,6 +96,11 @@ class TaskSupervisor:
         self._short_tasks = TaskSet("supervised-short", max_tasks=256)
         self._stopping = False
 
+    @property
+    def stopping(self) -> bool:
+        """Whether shutdown has begun and no supervised work should be restarted."""
+        return self._stopping
+
     def spawn(self, coro: Coroutine[Any, Any, Any], *, name: str) -> asyncio.Task[Any] | None:
         """Start a short-lived task bounded by TaskSet."""
         if self._stopping:
@@ -141,11 +146,11 @@ class TaskSupervisor:
         loop = asyncio.get_running_loop()
         backoff = min_backoff
         failures = 0
-        while True:
+        while not self._stopping:
             started = loop.time()
             try:
                 await factory()
-                if not restart:
+                if not restart or self._stopping:
                     return
                 log.warning("Supervised task %s returned; restarting in %.1fs", name, backoff)
             except asyncio.CancelledError:
@@ -160,10 +165,14 @@ class TaskSupervisor:
                 )
                 if not restart:
                     return
+                if self._stopping:
+                    return
                 await self._escalate(name, failures, exc)
             if loop.time() - started > 60.0:
                 backoff = min_backoff
                 failures = 0
+            if self._stopping:
+                return
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, max_backoff)
 

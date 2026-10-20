@@ -43,6 +43,30 @@ def test_one_shot_task_can_start_again_after_it_finishes():
     asyncio.run(scenario())
 
 
+def test_supervisor_does_not_restart_a_cancelled_factory_during_shutdown():
+    async def scenario():
+        supervisor = TaskSupervisor()
+        calls = 0
+
+        async def worker():
+            nonlocal calls
+            calls += 1
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                # Some long-running workers perform cleanup and return instead
+                # of re-raising cancellation.
+                return
+
+        supervisor.start("worker", worker)
+        await asyncio.sleep(0)
+        await supervisor.stop_all(timeout=0.2)
+        assert calls == 1
+        assert supervisor.live_count() == 0
+
+    asyncio.run(scenario())
+
+
 def test_taskset_is_bounded_and_cancels_everything():
     async def scenario():
         tasks = TaskSet("test", max_tasks=2)

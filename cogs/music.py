@@ -752,6 +752,69 @@ class Music(commands.Cog):
     ) -> list[app_commands.Choice[str]]:
         return await self._search_autocomplete(interaction, current)
 
+    @app_commands.command(name="lyrics", description="Show lyrics for the currently playing track")
+    @app_commands.guild_only()
+    async def lyrics(self, interaction: discord.Interaction) -> None:
+        guild_member(interaction)
+        player = self.bot.registry.get(interaction.guild_id or 0)
+        current = getattr(player, "current", None)
+        encoded_track = getattr(getattr(current, "track", None), "track", None)
+        if not current or not encoded_track:
+            await reply(interaction, "There is no playable track to look up lyrics for.", ephemeral=True)
+            return
+
+        node_manager = getattr(self.bot.lavalink, "node_manager", None)
+        node = node_manager.find_ideal_node() if node_manager else None
+        if node is None:
+            await reply(interaction, "The audio server is currently unavailable.", ephemeral=True)
+            return
+        if not await safe_defer(interaction, ephemeral=True):
+            return
+
+        try:
+            result = await node.request(
+                "GET",
+                "lyrics",
+                params={"track": encoded_track, "skipTrackSource": "true"},
+            )
+        except Exception as exc:
+            log.warning("guild=%s lyrics request failed: %s", interaction.guild_id, type(exc).__name__)
+            result = None
+
+        lyrics_text = ""
+        if isinstance(result, dict):
+            lyrics_text = str(result.get("text") or "").strip()
+            if not lyrics_text:
+                lines = result.get("lines")
+                if isinstance(lines, list):
+                    lyrics_text = "\n".join(
+                        str(line.get("line") or "")
+                        for line in lines
+                        if isinstance(line, dict) and line.get("line")
+                    ).strip()
+        if not lyrics_text:
+            await interaction.followup.send(
+                f"No lyrics found for **{truncate(current.title)}**.",
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+
+        lyrics_text = discord.utils.escape_mentions(lyrics_text)
+        heading = f"**Lyrics: {truncate(current.title)}**\n"
+        first_limit = 1950 - len(heading)
+        chunks = [heading + lyrics_text[:first_limit]]
+        remaining = lyrics_text[first_limit:]
+        while remaining:
+            chunks.append(remaining[:1950])
+            remaining = remaining[1950:]
+        for chunk in chunks:
+            await interaction.followup.send(
+                chunk,
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+
     @app_commands.command(name="autoplay", description="Toggle or view autoplay when the queue ends")
     @app_commands.describe(enabled="Turn autoplay on or off")
     @app_commands.guild_only()

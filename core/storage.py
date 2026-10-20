@@ -3,6 +3,7 @@
 All queries are parameterized and executed sequentially on one worker thread.
 The event loop never blocks on database I/O.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -149,6 +150,40 @@ SCHEMA_MIGRATIONS = [
     """
     ALTER TABLE queue_snapshots ADD COLUMN card_channel_id INTEGER NOT NULL DEFAULT 0;
     """,
+    # Migration 6: Allow an owner to grant and revoke read/play access to a playlist.
+    """
+    CREATE TABLE IF NOT EXISTS playlist_shares (
+        playlist_id INTEGER NOT NULL,
+        recipient_id INTEGER NOT NULL,
+        created_at REAL NOT NULL,
+        PRIMARY KEY (playlist_id, recipient_id),
+        FOREIGN KEY (playlist_id) REFERENCES playlists (playlist_id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_playlist_shares_recipient ON playlist_shares (recipient_id);
+    """,
+    # Migration 7: Persist qualified listening totals and ranked tracks for /stats.
+    """
+    CREATE TABLE IF NOT EXISTS user_listening_stats (
+        user_id INTEGER PRIMARY KEY,
+        total_listening_ms INTEGER NOT NULL DEFAULT 0,
+        total_tracks_played INTEGER NOT NULL DEFAULT 0,
+        updated_at REAL NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS user_listening_tracks (
+        user_id INTEGER NOT NULL,
+        track_key TEXT NOT NULL,
+        title TEXT NOT NULL,
+        artist TEXT NOT NULL DEFAULT '',
+        play_count INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (user_id, track_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_listening_tracks_count
+    ON user_listening_tracks (user_id, play_count DESC);
+    """,
+    # Migration 8: Retain the most recently played track when listening counts tie.
+    """
+    ALTER TABLE user_listening_tracks ADD COLUMN last_played_at REAL NOT NULL DEFAULT 0;
+    """,
 ]
 
 
@@ -280,10 +315,7 @@ class Storage:
                         conn.rollback()
                     except Exception:
                         log.debug("Batch rollback after commit failure failed", exc_info=True)
-                    completed = [
-                        (op, None, c_exc if op.is_write and error is None else error)
-                        for op, result, error in completed
-                    ]
+                    completed = [(op, None, c_exc if op.is_write and error is None else error) for op, result, error in completed]
 
             for op, result, error in completed:
                 self._complete_future(op, result=result, error=error)
@@ -594,7 +626,12 @@ class Storage:
     async def list_playlists(self, user_id: int) -> list[str]:
         def _list(conn: sqlite3.Connection) -> list[str]:
             cur = conn.cursor()
-            cur.execute("SELECT name FROM playlists WHERE user_id = ? ORDER BY name ASC", (user_id,))
+            cur.execute(
+                "SELECT name FROM playlists WHERE user_id = ? "
+                "UNION SELECT p.name FROM playlists p JOIN playlist_shares s USING (playlist_id) "
+                "WHERE s.recipient_id = ? ORDER BY name COLLATE NOCASE",
+                (user_id, user_id),
+            )
             return [r[0] for r in cur.fetchall()]
 
         return await self._run(_list)
@@ -661,7 +698,10 @@ class Storage:
 
         def _get(conn: sqlite3.Connection) -> list[StoredTrack]:
             cur = conn.cursor()
-            cur.execute("SELECT playlist_id FROM playlists WHERE user_id = ? AND name = ?", (user_id, clean_name))
+            cur.execute(
+                "SELECT playlist_id FROM playlists WHERE user_id = ? AND name = ?",
+                (user_id, clean_name),
+            )
             row = cur.fetchone()
             if not row:
                 raise StorageError("Playlist not found.")
@@ -678,12 +718,76 @@ class Storage:
 
         return await self._run(_get)
 
+    async def share_playlist(self, owner_id: int, name: str, recipient_id: int) -> None:
+        clean_name = name.strip()
+
+        def _share(conn: sqlite3.Connection) -> None:
+            cur = conn.cursor()
+            cur.execute("SELECT playlist_id FROM playlists WHERE user_id = ? AND name = ?", (owner_id, clean_name))
+            row = cur.fetchone()
+            if not row:
+                raise StorageError("Playlist not found.")
+            try:
+                cur.execute(
+                    "INSERT INTO playlist_shares (playlist_id, recipient_id, created_at) VALUES (?, ?, ?)",
+                    (row[0], recipient_id, time.time()),
+                )
+            except sqlite3.IntegrityError:
+                raise StorageError("That playlist is already shared with this user.") from None
+
+        await self._run(_share, is_write=True)
+
+    async def unshare_playlist(self, owner_id: int, name: str, recipient_id: int) -> bool:
+        def _unshare(conn: sqlite3.Connection) -> bool:
+            cur = conn.cursor()
+            cur.execute(
+                "DELETE FROM playlist_shares WHERE recipient_id = ? AND playlist_id IN "
+                "(SELECT playlist_id FROM playlists WHERE user_id = ? AND name = ?)",
+                (recipient_id, owner_id, name.strip()),
+            )
+            return cur.rowcount > 0
+
+        return await self._run(_unshare, is_write=True)
+
+    async def list_shared_playlists(self, recipient_id: int) -> list[tuple[int, str]]:
+        def _list(conn: sqlite3.Connection) -> list[tuple[int, str]]:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT p.user_id, p.name FROM playlist_shares s JOIN playlists p USING (playlist_id) "
+                "WHERE s.recipient_id = ? ORDER BY p.name",
+                (recipient_id,),
+            )
+            return [(int(row[0]), str(row[1])) for row in cur.fetchall()]
+
+        return await self._run(_list)
+
+    async def get_shared_playlist_tracks(self, recipient_id: int, owner_id: int, name: str) -> list[StoredTrack]:
+        def _get(conn: sqlite3.Connection) -> list[StoredTrack]:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT p.playlist_id FROM playlists p JOIN playlist_shares s USING (playlist_id) "
+                "WHERE s.recipient_id = ? AND p.user_id = ? AND p.name = ?",
+                (recipient_id, owner_id, name.strip()),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise StorageError("No shared playlist with that owner and name was found.")
+            cur.execute(
+                "SELECT uri, title, artist, duration_ms FROM playlist_tracks WHERE playlist_id = ? ORDER BY position", (row[0],)
+            )
+            return [StoredTrack(uri=r[0], title=r[1], artist=r[2], duration_ms=r[3]) for r in cur.fetchall()]
+
+        return await self._run(_get)
+
     async def add_playlist_track(self, user_id: int, name: str, track: StoredTrack, limit: int) -> int:
         clean_name = name.strip()
 
         def _add(conn: sqlite3.Connection) -> int:
             cur = conn.cursor()
-            cur.execute("SELECT playlist_id FROM playlists WHERE user_id = ? AND name = ?", (user_id, clean_name))
+            cur.execute(
+                "SELECT playlist_id FROM playlists WHERE user_id = ? AND name = ?",
+                (user_id, clean_name),
+            )
             row = cur.fetchone()
             if not row:
                 raise StorageError("Playlist not found.")
@@ -709,7 +813,10 @@ class Storage:
 
         def _remove(conn: sqlite3.Connection) -> StoredTrack:
             cur = conn.cursor()
-            cur.execute("SELECT playlist_id FROM playlists WHERE user_id = ? AND name = ?", (user_id, clean_name))
+            cur.execute(
+                "SELECT playlist_id FROM playlists WHERE user_id = ? AND name = ?",
+                (user_id, clean_name),
+            )
             row = cur.fetchone()
             if not row:
                 raise StorageError("Playlist not found.")
@@ -777,6 +884,7 @@ class Storage:
 
     async def get_queue_snapshot_voice_channel_id(self, guild_id: int) -> int:
         """Return the saved channel only when a recoverable queue snapshot exists."""
+
         def _get(conn: sqlite3.Connection) -> int:
             cur = conn.cursor()
             cur.execute(
@@ -790,6 +898,7 @@ class Storage:
 
     async def get_queue_snapshot_card_channel_id(self, guild_id: int) -> int:
         """Return the text channel used by the recoverable now-playing card."""
+
         def _get(conn: sqlite3.Connection) -> int:
             cur = conn.cursor()
             cur.execute(
@@ -840,6 +949,9 @@ class Storage:
             )
             cur.execute("DELETE FROM playlists WHERE user_id = ?", (user_id,))
             cur.execute("DELETE FROM user_play_history WHERE user_id = ?", (user_id,))
+            cur.execute("DELETE FROM playlist_shares WHERE recipient_id = ?", (user_id,))
+            cur.execute("DELETE FROM user_listening_tracks WHERE user_id = ?", (user_id,))
+            cur.execute("DELETE FROM user_listening_stats WHERE user_id = ?", (user_id,))
 
         try:
             await self._run(_reset, is_write=True)
@@ -931,6 +1043,20 @@ class Storage:
 
         return await self._run(_get)
 
+    async def get_recent_bot_history_tracks(self, user_id: int, limit: int = 200) -> list[StoredTrack]:
+        def _get(conn: sqlite3.Connection) -> list[StoredTrack]:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT h.title, h.artist, h.uri FROM user_play_history h "
+                "WHERE h.user_id = ? AND h.played_at = (SELECT MAX(latest.played_at) "
+                "FROM user_play_history latest WHERE latest.user_id = h.user_id AND latest.key = h.key) "
+                "ORDER BY h.played_at DESC LIMIT ?",
+                (user_id, max(1, min(limit, 500))),
+            )
+            return [StoredTrack(uri=r[2], title=r[0], artist=r[1], duration_ms=0) for r in cur.fetchall()]
+
+        return await self._run(_get)
+
     async def get_user_play_history_cached(self, user_id: int, limit: int = 25) -> list[UserHistoryEntry]:
         cached = self._history_cache.get(user_id)
         if cached is not None:
@@ -953,11 +1079,79 @@ class Storage:
         def _del(conn: sqlite3.Connection) -> None:
             cur = conn.cursor()
             cur.execute("DELETE FROM user_play_history WHERE user_id = ?", (user_id,))
+            cur.execute("DELETE FROM user_listening_tracks WHERE user_id = ?", (user_id,))
+            cur.execute("DELETE FROM user_listening_stats WHERE user_id = ?", (user_id,))
 
         try:
             await self._run(_del, is_write=True)
         finally:
             self._history_cache.invalidate(user_id)
+
+    async def record_user_listening_stats(
+        self, user_id: int, title: str, artist: str, listened_ms: int, *, max_tracks: int = 500
+    ) -> None:
+        if user_id <= 0 or listened_ms <= 0:
+            return
+        clean_title = (title or "").strip()[:200]
+        clean_artist = (artist or "").strip()[:100]
+        if not clean_title:
+            return
+        key = f"{clean_title} - {clean_artist}".casefold()
+
+        def _record(conn: sqlite3.Connection) -> None:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO user_listening_stats (user_id, total_listening_ms, total_tracks_played, updated_at) "
+                "VALUES (?, ?, 1, ?) ON CONFLICT(user_id) DO UPDATE SET "
+                "total_listening_ms = total_listening_ms + excluded.total_listening_ms, "
+                "total_tracks_played = total_tracks_played + 1, updated_at = excluded.updated_at",
+                (user_id, listened_ms, time.time()),
+            )
+            cur.execute(
+                "INSERT INTO user_listening_tracks (user_id, track_key, title, artist, play_count, last_played_at) "
+                "VALUES (?, ?, ?, ?, 1, ?) ON CONFLICT(user_id, track_key) DO UPDATE SET "
+                "title = excluded.title, artist = excluded.artist, play_count = play_count + 1, "
+                "last_played_at = excluded.last_played_at",
+                (user_id, key, clean_title, clean_artist, time.time()),
+            )
+            limit_value = max(1, max_tracks)
+            cur.execute(
+                "DELETE FROM user_listening_tracks WHERE user_id = ? AND track_key != ? AND track_key NOT IN "
+                "(SELECT track_key FROM user_listening_tracks WHERE user_id = ? "
+                "ORDER BY play_count DESC, last_played_at DESC LIMIT ?)",
+                (user_id, key, user_id, limit_value),
+            )
+
+        await self._run(_record, is_write=True)
+
+    async def get_user_listening_stats(self, user_id: int) -> dict[str, Any]:
+        def _get(conn: sqlite3.Connection) -> dict[str, Any]:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT total_listening_ms, total_tracks_played FROM user_listening_stats WHERE user_id = ?",
+                (user_id,),
+            )
+            row = cur.fetchone()
+            cur.execute(
+                "SELECT artist, SUM(play_count) AS plays FROM user_listening_tracks "
+                "WHERE user_id = ? AND artist != '' GROUP BY artist ORDER BY plays DESC, artist COLLATE NOCASE LIMIT 10",
+                (user_id,),
+            )
+            artists = [(str(r[0]), int(r[1])) for r in cur.fetchall()]
+            cur.execute(
+                "SELECT title, artist, play_count FROM user_listening_tracks "
+                "WHERE user_id = ? ORDER BY play_count DESC, last_played_at DESC LIMIT 10",
+                (user_id,),
+            )
+            tracks = [(str(r[0]), str(r[1]), int(r[2])) for r in cur.fetchall()]
+            return {
+                "total_listening_ms": int(row[0]) if row else 0,
+                "total_tracks_played": int(row[1]) if row else 0,
+                "artists": artists,
+                "tracks": tracks,
+            }
+
+        return await self._run(_get)
 
     # ---------------------------------------------------- json export
     async def export_all_json(self) -> dict[str, Any]:
@@ -966,8 +1160,11 @@ class Storage:
                 "guild_settings": [],
                 "favorites": [],
                 "playlists": [],
+                "playlist_shares": [],
                 "queue_snapshots": [],
                 "user_play_history": [],
+                "user_listening_stats": [],
+                "user_listening_tracks": [],
             }
 
             cur = conn.cursor()
@@ -1004,6 +1201,11 @@ class Storage:
             cols = [d[0] for d in cur.description]
             for row in cur.fetchall():
                 export["user_play_history"].append(dict(zip(cols, row)))
+
+            for table in ("playlist_shares", "user_listening_stats", "user_listening_tracks"):
+                cur.execute(f"SELECT * FROM {table}")
+                cols = [d[0] for d in cur.description]
+                export[table] = [dict(zip(cols, row)) for row in cur.fetchall()]
 
             return export
 

@@ -315,7 +315,8 @@ class VoiceStatusManager:
                     await asyncio.sleep(0)
 
             except asyncio.CancelledError:
-                break
+                self._stopped = True
+                raise
             except Exception as exc:
                 log.exception("VoiceStatusManager flusher loop error: %s", exc)
                 await asyncio.sleep(1.0)
