@@ -8,5 +8,5 @@ Pillow==13.0.0
 spotifyscraper==3.9.2
 orjson==3.13.0
 aiodns==4.0.4
-Brotli==1.2.0
+Brotli==1.2.1
 pycares==5.2.1

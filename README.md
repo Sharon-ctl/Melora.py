@@ -7,7 +7,7 @@
 
 A slash-command-only music bot built for unattended operation. It connects to an existing Lavalink 4.x server as a client. It does not run or configure Lavalink.
 
-- discord.py 2.7.1, lavalink.py 5.11.0, Python 3.11.9
+- discord.py 2.7.1, lavalink.py 5.11.1, Python 3.11+
 - Intents: guilds, voice_states, guild_messages. No members or presence intents. Message content intent is disabled and message cache is turned off.
 - Per-guild players, a bot-owned queue, supervised background tasks, watchdog, soak test, and Components V2 interactive cards.
 
