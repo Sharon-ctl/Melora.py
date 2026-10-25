@@ -51,6 +51,11 @@ def test_storage_lifecycle_and_crud(tmp_path: Path):
         assert updated.autoplay is True
         assert updated.volume_limit == 80
         assert updated.auto_pause is True
+        await storage.update_guild_settings(123, default_volume=75)
+        lowered = await storage.update_guild_settings(123, volume_limit=60)
+        assert lowered.default_volume == 60
+        with pytest.raises(StorageError, match="Default volume cannot be higher"):
+            await storage.update_guild_settings(123, default_volume=61)
 
         # Favorites
         track1 = StoredTrack(uri="http://example.com/1", title="Song 1", artist="Artist 1", duration_ms=180000)
@@ -143,6 +148,14 @@ def test_moderated_requests_storage(tmp_path: Path):
         claimed = await storage.pop_track_request(77, claimed_id)
         assert claimed is not None and claimed[1].title == "Song"
         assert await storage.pop_track_request(77, claimed_id) is None
+        for _ in range(10):
+            await storage.add_track_request(77, 42, track)
+        with pytest.raises(StorageError, match="10 pending requests"):
+            await storage.add_track_request(77, 42, track)
+        # The limit applies per requester; another listener can still request a track.
+        await storage.add_track_request(77, 43, track)
+        await storage.delete_guild(77)
+        assert await storage.list_track_requests(77) == []
         await storage.close()
 
     run_async(scenario())
@@ -156,8 +169,27 @@ def test_private_track_notes_storage(tmp_path: Path):
         assert await storage.get_track_note(42, "track-key") == "Road trip favorite"
         assert await storage.get_track_note(43, "track-key") is None
         assert await storage.list_track_notes(42) == [("track-key", "Song", "Road trip favorite")]
+        assert await storage.delete_track_note(42, "track-key") is True
+        assert await storage.delete_track_note(42, "track-key") is False
+        await storage.set_track_note(42, "track-key", "Song", "Road trip favorite")
         await storage.reset_user_data(42)
         assert await storage.get_track_note(42, "track-key") is None
+        await storage.close()
+
+    run_async(scenario())
+
+
+def test_track_notes_have_a_per_user_limit(tmp_path: Path):
+    async def scenario():
+        storage = Storage(tmp_path / "track-notes-limit.db")
+        storage.start()
+        for index in range(200):
+            await storage.set_track_note(42, f"track-{index}", f"Song {index}", "Note")
+        with pytest.raises(StorageError, match="200 private track notes"):
+            await storage.set_track_note(42, "one-too-many", "Another Song", "Note")
+        # Updating an existing note remains possible at capacity.
+        await storage.set_track_note(42, "track-0", "Song 0", "Updated")
+        assert await storage.get_track_note(42, "track-0") == "Updated"
         await storage.close()
 
     run_async(scenario())

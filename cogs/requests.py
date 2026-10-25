@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -12,7 +13,7 @@ from discord.ext import commands
 from core.queue import QueueItem, extract_user_avatar_url
 from core.storage import StorageError, StoredTrack
 from utils.checks import guild_member, require_dj, user_voice_channel
-from utils.components_v2 import BaseCardView, TextDisplay, create_card_container, reply_card
+from utils.components_v2 import PaginatedPage, PaginatedView, reply_card
 from utils.errors import BotUserError, StageUnsupported, WrongChannel
 from utils.interaction import reply, safe_defer
 from utils.text import clean, format_duration, truncate
@@ -40,7 +41,7 @@ class Requests(commands.Cog):
             self.bot.cfg,
             member,
             dj_role_id=getattr(player, "dj_role_id", 0) or getattr(settings, "dj_role_id", 0),
-            dj_only=getattr(player, "dj_only", False),
+            dj_only=getattr(player, "dj_only", settings.dj_only),
         )
 
     @requests_group.command(name="add", description="Submit a song for a DJ to approve")
@@ -69,8 +70,13 @@ class Requests(commands.Cog):
         if not items:
             raise BotUserError("I couldn't find a playable track for that request.")
         item = items[0]
+        stored_query = (
+            f"ytsearch:{item.title} - {item.artist}"
+            if item.spotify_metadata
+            else item.uri or item.query or query.strip()
+        )
         stored = StoredTrack(
-            uri=item.uri or item.query or query.strip(),
+            uri=stored_query,
             title=clean(item.title)[:200],
             artist=clean(item.artist)[:100],
             duration_ms=item.duration_ms,
@@ -90,22 +96,42 @@ class Requests(commands.Cog):
     @requests_group.command(name="list", description="Review pending track requests")
     @app_commands.guild_only()
     async def request_list(self, interaction: discord.Interaction) -> None:
+        if not await safe_defer(interaction, ephemeral=True):
+            return
         await self._require_dj(interaction)
         try:
             rows = await self.bot.storage.list_track_requests(interaction.guild_id or 0)
         except StorageError:
             await reply(interaction, "Request storage is temporarily unavailable.", ephemeral=True)
             return
-        lines = ["### Pending Track Requests", ""]
-        lines.extend(
-            f"**#{rid}** | **{truncate(track.title, 70)}** | `{format_duration(track.duration_ms)}` | <@{uid}>"
-            for rid, uid, track in rows
+        page_size = 10
+        page_count = max(1, (len(rows) + page_size - 1) // page_size)
+
+        def request_page(page_number: int) -> PaginatedPage:
+            page_number = min(max(1, page_number), page_count)
+            start = (page_number - 1) * page_size
+            page_rows = rows[start : start + page_size]
+            items = [
+                f"**#{rid}** | **{discord.utils.escape_mentions(discord.utils.escape_markdown(truncate(track.title, 70)))}** "
+                f"| `{format_duration(track.duration_ms)}` | <@{uid}>"
+                for rid, uid, track in page_rows
+            ]
+            return PaginatedPage(
+                title="**Pending Track Requests**",
+                items=items,
+                current_page=page_number,
+                total_pages=page_count,
+                empty_message="No pending requests.",
+                extra_header="Approve with `/requests approve` or decline with `/requests reject`.",
+            )
+
+        view = PaginatedView(
+            items_provider=request_page,
+            author_id=interaction.user.id,
+            guild_id=interaction.guild_id or 0,
+            kind="requests",
         )
-        if not rows:
-            lines.append("No pending requests.")
-        lines.extend(["", "Approve with `/requests approve` or decline with `/requests reject`."])
-        view = BaseCardView(timeout=90, author_id=interaction.user.id, guild_id=interaction.guild_id, kind="requests")
-        view.add_item(create_card_container(TextDisplay("\n".join(lines))))
+        await view.render(1)
         await reply_card(interaction, view, ephemeral=True)
 
     @requests_group.command(name="approve", description="Approve a request and add it to playback")
@@ -114,6 +140,8 @@ class Requests(commands.Cog):
     async def request_approve(
         self, interaction: discord.Interaction, request_id: app_commands.Range[int, 1, 2_147_483_647]
     ) -> None:
+        if not await safe_defer(interaction, ephemeral=True):
+            return
         await self._require_dj(interaction)
         channel = user_voice_channel(interaction)
         if isinstance(channel, discord.StageChannel):
@@ -126,17 +154,39 @@ class Requests(commands.Cog):
             and self.bot.backend.voice_connected(guild_id, existing.voice_channel_id)
         ):
             raise WrongChannel(channel_id=existing.voice_channel_id)
-        player = await self.bot.registry.get_or_create(guild_id, channel.id, interaction.channel_id or 0)
         row = await self.bot.storage.pop_track_request(guild_id, request_id)
         if row is None:
             await reply(interaction, "That request is no longer pending.", ephemeral=True)
             return
         requester_id, track = row
-        query = track.uri
-        item = QueueItem(None, track.title, track.duration_ms, requester_id, artist=track.artist, uri=track.uri, query=query)
+        player = None
+        item = QueueItem(
+            None,
+            track.title,
+            track.duration_ms,
+            requester_id,
+            artist=track.artist,
+            uri=track.uri,
+            query=track.uri,
+        )
         try:
+            player = await self.bot.registry.get_or_create(guild_id, channel.id, interaction.channel_id or 0)
             result = await player.enqueue([item])
+        except asyncio.CancelledError:
+            already_queued = player is not None and (player.current is item or any(queued is item for queued in player.queue))
+            if not already_queued:
+                await asyncio.shield(self.bot.storage.add_track_request(guild_id, requester_id, track))
+            raise
         except Exception:
+            already_queued = player is not None and (player.current is item or any(queued is item for queued in player.queue))
+            if already_queued:
+                log.exception("guild=%s request #%s was queued but playback reported an error", guild_id, request_id)
+                await reply(
+                    interaction,
+                    f"Request **#{request_id}** was added to the queue, but playback hit an error.",
+                    ephemeral=True,
+                )
+                return
             restored_id = await self.bot.storage.add_track_request(guild_id, requester_id, track)
             log.exception("guild=%s failed to enqueue request #%s; restored as #%s", guild_id, request_id, restored_id)
             await reply(
@@ -146,7 +196,8 @@ class Requests(commands.Cog):
             )
             return
         if result.added:
-            await reply(interaction, f"Approved **#{request_id}** and queued **{truncate(track.title)}**.")
+            safe_title = discord.utils.escape_markdown(truncate(track.title))
+            await reply(interaction, f"Approved **#{request_id}** and queued **{safe_title}**.", ephemeral=True)
         else:
             await self.bot.storage.add_track_request(guild_id, requester_id, track)
             await reply(interaction, "The request could not be added to the queue; it remains pending.", ephemeral=True)
@@ -157,6 +208,8 @@ class Requests(commands.Cog):
     async def request_reject(
         self, interaction: discord.Interaction, request_id: app_commands.Range[int, 1, 2_147_483_647]
     ) -> None:
+        if not await safe_defer(interaction, ephemeral=True):
+            return
         await self._require_dj(interaction)
         removed = await self.bot.storage.delete_track_request(interaction.guild_id or 0, request_id)
         await reply(

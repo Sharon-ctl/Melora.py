@@ -74,7 +74,8 @@ def test_saved_autoplay_setting_is_restored_on_player_creation():
             voice_247_channel_id=0,
             restore_queue=False,
             autoplay=True,
-            default_volume=100,
+            default_volume=80,
+            volume_limit=55,
             max_queue=0,
             dj_role_id=0,
             dj_only=False,
@@ -88,6 +89,7 @@ def test_saved_autoplay_setting_is_restored_on_player_creation():
         registry = PlayerRegistry(services)
         player = await registry.get_or_create(1, 10, 20)
         assert player.autoplay is True
+        assert player.volume == 55
         await registry.destroy_all("test")
 
     run(scenario())

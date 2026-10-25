@@ -524,6 +524,7 @@ class Storage:
         for k in fields:
             if k not in allowed:
                 raise ValueError(f"Unknown guild setting: {k}")
+        changes = dict(fields)
 
         self._settings_cache.invalidate(guild_id)
 
@@ -536,9 +537,20 @@ class Storage:
                     "INSERT INTO guild_settings (guild_id) VALUES (?)",
                     (guild_id,),
                 )
-            if fields:
-                set_clauses = [f"{col} = ?" for col in fields]
-                values = [int(v) if isinstance(v, bool) else v for v in fields.values()]
+            if "volume_limit" in changes or "default_volume" in changes:
+                current = cur.execute(
+                    "SELECT volume_limit, default_volume FROM guild_settings WHERE guild_id = ?", (guild_id,)
+                ).fetchone()
+                effective_limit = int(changes.get("volume_limit", current[0]))
+                effective_default = int(changes.get("default_volume", current[1]))
+                if effective_default > effective_limit:
+                    if "volume_limit" in changes and "default_volume" not in changes:
+                        changes["default_volume"] = effective_limit
+                    else:
+                        raise StorageError("Default volume cannot be higher than the server volume limit.")
+            if changes:
+                set_clauses = [f"{col} = ?" for col in changes]
+                values = [int(v) if isinstance(v, bool) else v for v in changes.values()]
                 values.append(guild_id)
                 cur.execute(
                     f"UPDATE guild_settings SET {', '.join(set_clauses)} WHERE guild_id = ?",
@@ -588,6 +600,7 @@ class Storage:
             cur = conn.cursor()
             cur.execute("DELETE FROM guild_settings WHERE guild_id = ?", (guild_id,))
             cur.execute("DELETE FROM queue_snapshots WHERE guild_id = ?", (guild_id,))
+            cur.execute("DELETE FROM track_requests WHERE guild_id = ?", (guild_id,))
 
         await self._run(_del, is_write=True)
 
@@ -595,6 +608,12 @@ class Storage:
     async def add_track_request(self, guild_id: int, requester_id: int, track: StoredTrack, limit: int = 50) -> int:
         def _add(conn: sqlite3.Connection) -> int:
             cur = conn.cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM track_requests WHERE guild_id = ? AND requester_id = ?",
+                (guild_id, requester_id),
+            )
+            if int(cur.fetchone()[0]) >= 10:
+                raise StorageError("You already have 10 pending requests in this server.")
             cur.execute("SELECT COUNT(*) FROM track_requests WHERE guild_id = ?", (guild_id,))
             if int(cur.fetchone()[0]) >= limit:
                 raise StorageError("The server request list is full. Please try again later.")
@@ -638,6 +657,15 @@ class Storage:
 
     async def set_track_note(self, user_id: int, track_key: str, title: str, note: str) -> None:
         def _set(conn: sqlite3.Connection) -> None:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT 1 FROM user_track_notes WHERE user_id = ? AND track_key = ?",
+                (user_id, track_key),
+            )
+            if cur.fetchone() is None:
+                cur.execute("SELECT COUNT(*) FROM user_track_notes WHERE user_id = ?", (user_id,))
+                if int(cur.fetchone()[0]) >= 200:
+                    raise StorageError("You have reached the limit of 200 private track notes.")
             conn.execute(
                 "INSERT INTO user_track_notes (user_id, track_key, title, note, updated_at) VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT(user_id, track_key) DO UPDATE SET "
@@ -665,6 +693,16 @@ class Storage:
             return row[0] if row else None
 
         return await self._run(_get)
+
+    async def delete_track_note(self, user_id: int, track_key: str) -> bool:
+        def _delete(conn: sqlite3.Connection) -> bool:
+            cur = conn.execute(
+                "DELETE FROM user_track_notes WHERE user_id = ? AND track_key = ?",
+                (user_id, track_key),
+            )
+            return cur.rowcount > 0
+
+        return await self._run(_delete, is_write=True)
 
     async def pop_track_request(self, guild_id: int, request_id: int) -> tuple[int, StoredTrack] | None:
         def _pop(conn: sqlite3.Connection) -> tuple[int, StoredTrack] | None:

@@ -19,13 +19,13 @@ from discord.ext import commands
 
 from core.queue import QueueItem, extract_user_avatar_url
 from core.spotify import parse_spotify_url
-from core.storage import StoredTrack
+from core.storage import StorageError, StoredTrack
 from utils.profile_canvas import render_profile, render_stats
 from utils.checks import check_bot_channel_permissions, guild_member, require_dj, user_voice_channel
-from utils.components_v2 import BaseCardView, TextDisplay, create_card_container, reply_card
+from utils.components_v2 import BaseCardView, PaginatedPage, PaginatedView, TextDisplay, create_card_container, reply_card
 from utils.errors import BotUserError, StageUnsupported, WrongChannel
 from utils.interaction import reply, safe_defer
-from utils.text import clean, format_duration, truncate
+from utils.text import clean, format_duration, format_uptime, truncate
 
 if TYPE_CHECKING:
     from main import MusicBot
@@ -131,6 +131,9 @@ class Features(commands.Cog):
         tracks = list(recent)
         if player.current is not None:
             tracks.append(player.current)
+        chronological_tracks = list(reversed(recent))
+        if player.current is not None:
+            chronological_tracks.append(player.current)
         requesters: dict[int, int] = {}
         for item in tracks:
             if item.requester_id:
@@ -138,25 +141,33 @@ class Features(commands.Cog):
         top = sorted(requesters.items(), key=lambda entry: (-entry[1], entry[0]))[:3]
         top_text = ", ".join(f"<@{uid}> ({count})" for uid, count in top) or "No requester data"
         estimated_ms = sum(max(0, item.duration_ms) for item in tracks if not item.is_stream)
-        recent_titles = [f"- {truncate(item.title, 65)}" for item in tracks[-5:]]
+        recent_titles = [
+            f"- {discord.utils.escape_mentions(discord.utils.escape_markdown(truncate(item.title, 65)))}"
+            for item in chronological_tracks[-5:]
+        ]
         lines = [
             "### Listening Session Recap",
-            f"**Player uptime:** `{format_duration(int(player.age() * 1000))}`",
+            f"**Player uptime:** `{format_uptime(player.age())}`",
             f"**Tracks represented:** `{len(tracks)}` (up to 50 recent completed plus current)",
             f"**Estimated track time:** `{format_duration(estimated_ms)}`",
             f"**Top requesters:** {top_text}",
             "",
             "**Recent tracks**",
-            *(reversed(recent_titles) if recent_titles else ["No tracks played yet."]),
+            *(recent_titles if recent_titles else ["No tracks played yet."]),
         ]
         view = BaseCardView(timeout=90, author_id=interaction.user.id, guild_id=guild_id, kind="session_recap")
         view.add_item(create_card_container(TextDisplay("\n".join(lines))))
         await reply_card(interaction, view, ephemeral=True)
 
     @app_commands.command(name="track-note", description="Save or view your private note for the current track")
-    @app_commands.describe(note="Your private note (leave empty to view the saved note)")
+    @app_commands.describe(note="Your private note (leave empty to view it)", clear="Remove your note for this track")
     @app_commands.guild_only()
-    async def track_note(self, interaction: discord.Interaction, note: app_commands.Range[str, 1, 240] | None = None) -> None:
+    async def track_note(
+        self,
+        interaction: discord.Interaction,
+        note: app_commands.Range[str, 1, 240] | None = None,
+        clear: bool = False,
+    ) -> None:
         member, _ = self._voice(interaction)
         player = self.bot.registry.get(interaction.guild_id or 0)
         if player is None or player.current is None:
@@ -166,32 +177,75 @@ class Features(commands.Cog):
         key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
         if not await safe_defer(interaction, ephemeral=True):
             return
+        if clear and note is not None:
+            await reply(interaction, "Choose either a note or clear, not both.", ephemeral=True)
+            return
+        if clear:
+            removed = await self.bot.storage.delete_track_note(member.id, key)
+            await reply(
+                interaction,
+                "Your note for this track was removed." if removed else "You had no note saved for this track.",
+                ephemeral=True,
+            )
+            return
         if note is not None:
-            await self.bot.storage.set_track_note(member.id, key, clean(current.title)[:200], clean(note)[:240])
-            await reply(interaction, f"Saved your private note for **{truncate(current.title)}**.", ephemeral=True)
+            try:
+                await self.bot.storage.set_track_note(member.id, key, clean(current.title)[:200], clean(note)[:240])
+            except StorageError as exc:
+                await reply(interaction, str(exc), ephemeral=True)
+                return
+            safe_title = discord.utils.escape_markdown(truncate(current.title))
+            await reply(interaction, f"Saved your private note for **{safe_title}**.", ephemeral=True)
             return
         text = await self.bot.storage.get_track_note(member.id, key)
         if text:
-            await reply(interaction, f"Your note for **{truncate(current.title)}**: {text}", ephemeral=True)
+            safe_title = discord.utils.escape_markdown(truncate(current.title))
+            safe_note = discord.utils.escape_mentions(discord.utils.escape_markdown(text))
+            await reply(interaction, f"Your note for **{safe_title}**: {safe_note}", ephemeral=True)
         else:
             await reply(interaction, "You have no note saved for this track.", ephemeral=True)
 
     @app_commands.command(name="my-track-notes", description="List your private notes for saved tracks")
     @app_commands.guild_only()
     async def my_track_notes(self, interaction: discord.Interaction) -> None:
-        notes = await self.bot.storage.list_track_notes(interaction.user.id, limit=25)
-        lines = ["### Your Private Track Notes", ""]
-        lines.extend(f"**{truncate(title, 60)}** - {truncate(note, 120)}" for _, title, note in notes)
-        if not notes:
-            lines.append("No track notes saved yet. Use `/track-note` while a song is playing.")
-        view = BaseCardView(timeout=90, author_id=interaction.user.id, guild_id=interaction.guild_id, kind="track_notes")
-        view.add_item(create_card_container(TextDisplay("\n".join(lines))))
+        if not await safe_defer(interaction, ephemeral=True):
+            return
+        notes = await self.bot.storage.list_track_notes(interaction.user.id, limit=200)
+        page_size = 10
+        page_count = max(1, (len(notes) + page_size - 1) // page_size)
+
+        def notes_page(page_number: int) -> PaginatedPage:
+            page_number = min(max(1, page_number), page_count)
+            start = (page_number - 1) * page_size
+            page_notes = notes[start : start + page_size]
+            items = [
+                f"**{discord.utils.escape_mentions(discord.utils.escape_markdown(truncate(title, 60)))}** - "
+                f"{discord.utils.escape_mentions(discord.utils.escape_markdown(truncate(note, 120)))}"
+                for _, title, note in page_notes
+            ]
+            return PaginatedPage(
+                title="**Your Private Track Notes**",
+                items=items,
+                current_page=page_number,
+                total_pages=page_count,
+                empty_message="No track notes saved yet. Use `/track-note` while a song is playing.",
+            )
+
+        view = PaginatedView(
+            items_provider=notes_page,
+            author_id=interaction.user.id,
+            guild_id=interaction.guild_id or 0,
+            kind="track_notes",
+        )
+        await view.render(1)
         await reply_card(interaction, view, ephemeral=True)
 
     @app_commands.command(name="last-heard", description="Find when you last listened to a track")
     @app_commands.describe(query="Track title or artist to search in your listening history")
     @app_commands.guild_only()
     async def last_heard(self, interaction: discord.Interaction, query: app_commands.Range[str, 1, 100]) -> None:
+        if not await safe_defer(interaction, ephemeral=True):
+            return
         history = await self.bot.storage.get_user_play_history(interaction.user.id, limit=50)
         needle = clean(query).casefold()
         match = next((entry for entry in history if needle in f"{entry.title} {entry.artist}".casefold()), None)
@@ -199,8 +253,10 @@ class Features(commands.Cog):
             await reply(interaction, "No matching track was found in your recent listening history.", ephemeral=True)
             return
         timestamp = datetime.fromtimestamp(match.played_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        artist = f" by **{truncate(match.artist)}**" if match.artist else ""
-        result = f"You last heard **{truncate(match.title)}**{artist} on `{timestamp}`. "
+        safe_title = discord.utils.escape_markdown(truncate(match.title))
+        safe_artist = discord.utils.escape_markdown(truncate(match.artist))
+        artist = f" by **{safe_artist}**" if match.artist else ""
+        result = f"You last heard **{safe_title}**{artist} on `{timestamp}`. "
         result += "This searches your personal history across servers."
         await reply(
             interaction,
@@ -215,6 +271,8 @@ class Features(commands.Cog):
         if user.id == interaction.user.id:
             await reply(interaction, "Choose another user to compare listening tastes.", ephemeral=True)
             return
+        if not await safe_defer(interaction, ephemeral=True):
+            return
         mine, theirs = await asyncio.gather(
             self.bot.storage.get_user_listening_stats(interaction.user.id),
             self.bot.storage.get_user_listening_stats(user.id),
@@ -222,7 +280,10 @@ class Features(commands.Cog):
         their_artists = {artist.casefold() for artist, _ in theirs["artists"]}
         shared = [(artist, count) for artist, count in mine["artists"] if artist.casefold() in their_artists]
         lines = ["### Taste Overlap", f"You and <@{user.id}> share **{len(shared)}** top artists.", ""]
-        lines.extend(f"- **{truncate(artist, 60)}** ({count} of your plays)" for artist, count in shared[:8])
+        lines.extend(
+            f"- **{discord.utils.escape_mentions(discord.utils.escape_markdown(truncate(artist, 60)))}** ({count} of your plays)"
+            for artist, count in shared[:8]
+        )
         if not shared:
             lines.append("No shared top artists yet. Keep listening and check again later.")
         view = BaseCardView(timeout=90, author_id=interaction.user.id, guild_id=interaction.guild_id, kind="taste_compare")

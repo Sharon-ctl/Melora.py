@@ -364,13 +364,13 @@ All commands are slash commands only, except mentioning the bot in chat.
 - `/playlist remove name position`: Remove track from playlist.
 
 ### Community Commands
-- `/requests add query`: Submit one playable track for DJ review. Requests persist across restarts and are limited to 50 per server.
+- `/requests add query`: Submit one playable track for DJ review. Requests persist across restarts, with limits of 50 per server and 10 per requester.
 - `/requests list`: Show the pending request card (DJ role / DJ-only permissions apply).
 - `/requests approve request_id`: Add a pending request to the queue.
 - `/requests reject request_id`: Decline and remove a pending request.
 - `/dedicate [message]`: Add or clear a short dedication on the live now-playing card (requester or DJ).
 - `/session-recap`: Show a Components V2 summary of the current player's recent tracks, estimated track time, and top requesters.
-- `/track-note [note]`: Save or privately view your note for the currently playing track.
+- `/track-note [note] [clear]`: Save, view, or remove your private note for the currently playing track.
 - `/my-track-notes`: List your private track notes.
 - `/last-heard query`: Search your recent personal listening history across servers.
 - `/compare-taste user`: Privately compare your top artists with another listener's.

@@ -44,6 +44,8 @@ class Settings(commands.Cog):
     async def settings_view(self, interaction: discord.Interaction) -> None:
         self._require_manage_guild(interaction)
         guild_id = interaction.guild_id or 0
+        if not await safe_defer(interaction, ephemeral=True):
+            return
 
         try:
             s = await self.bot.storage.get_guild_settings(guild_id)
@@ -113,13 +115,24 @@ class Settings(commands.Cog):
         if not fields:
             await reply(interaction, "Choose at least one setup option to update.", ephemeral=True)
             return
+        if not await safe_defer(interaction, ephemeral=True):
+            return
         try:
+            if default_volume is not None:
+                current_settings = await self.bot.storage.get_guild_settings(interaction.guild_id or 0)
+                if default_volume > current_settings.volume_limit:
+                    await reply(
+                        interaction,
+                        f"Starting volume must be at or below the server limit of {current_settings.volume_limit}%.",
+                        ephemeral=True,
+                    )
+                    return
             settings = await self.bot.storage.update_guild_settings(interaction.guild_id or 0, **fields)
             player = self.bot.registry.get(interaction.guild_id or 0)
             if player is not None:
                 player.dj_role_id = settings.dj_role_id
                 if player.current is None:
-                    player.volume = settings.default_volume
+                    await player.set_volume(settings.default_volume)
             lines = ["### Setup Updated"]
             if dj_role is not None:
                 lines.append(f"DJ role: <@&{dj_role.id}>")
@@ -142,16 +155,21 @@ class Settings(commands.Cog):
             "View channel": interaction.app_permissions.view_channel,
             "Send messages": interaction.app_permissions.send_messages,
             "Embed links": interaction.app_permissions.embed_links,
+            "Attach files": interaction.app_permissions.attach_files,
         }
+        voice_checked = False
         voice = getattr(getattr(interaction.user, "voice", None), "channel", None)
         if voice is not None and guild.me is not None:
             voice_permissions = voice.permissions_for(guild.me)
             checks.update({"Connect to voice": voice_permissions.connect, "Speak": voice_permissions.speak})
+            voice_checked = True
         missing = [name for name, allowed in checks.items() if not allowed]
         if missing:
             result = "Missing permissions: " + ", ".join(f"**{name}**" for name in missing)
         else:
-            result = "Melora has the required permissions for this channel."
+            result = "Text channel permissions look good."
+        if not voice_checked:
+            result += " Join a voice channel to check voice permissions too."
         await reply(interaction, result, ephemeral=True)
 
     @settings_group.command(name="djrole", description="Set or clear the DJ role")
@@ -200,13 +218,19 @@ class Settings(commands.Cog):
     ) -> None:
         self._require_manage_guild(interaction)
         guild_id = interaction.guild_id or 0
+        if not await safe_defer(interaction, ephemeral=True):
+            return
 
         try:
-            await self.bot.storage.update_guild_settings(guild_id, volume_limit=limit)
+            previous = await self.bot.storage.get_guild_settings(guild_id)
+            updated = await self.bot.storage.update_guild_settings(guild_id, volume_limit=limit)
             player = self.bot.registry.get(guild_id)
             if player is not None and player.volume > limit:
                 await player.set_volume(limit)
-            await reply(interaction, messages.volume_limit_set(limit), ephemeral=True)
+            confirmation = messages.volume_limit_set(limit)
+            if previous.default_volume > updated.default_volume:
+                confirmation += f" Default starting volume was lowered to `{updated.default_volume}%`."
+            await reply(interaction, confirmation, ephemeral=True)
         except StorageError:
             await reply(interaction, messages.storage_unavailable(), ephemeral=True)
 
@@ -321,13 +345,13 @@ class Settings(commands.Cog):
     async def settings_auto_pause(self, interaction: discord.Interaction, enabled: bool) -> None:
         self._require_manage_guild(interaction)
         guild_id = interaction.guild_id or 0
+        if not await safe_defer(interaction, ephemeral=True):
+            return
         try:
             await self.bot.storage.update_guild_settings(guild_id, auto_pause=enabled)
             player = self.bot.registry.get(guild_id)
             if player is not None:
                 player.auto_pause = enabled
-                if not enabled:
-                    player.auto_paused = False
             await reply(interaction, f"Auto-pause {'enabled' if enabled else 'disabled'}.", ephemeral=True)
         except StorageError:
             await reply(interaction, messages.storage_unavailable(), ephemeral=True)
@@ -344,8 +368,18 @@ class Settings(commands.Cog):
         self._require_manage_guild(interaction)
         guild_id = interaction.guild_id or 0
         clamped_vol = max(1, min(100, volume))
+        if not await safe_defer(interaction, ephemeral=True):
+            return
 
         try:
+            settings = await self.bot.storage.get_guild_settings(guild_id)
+            if clamped_vol > settings.volume_limit:
+                await reply(
+                    interaction,
+                    f"Default volume must be at or below the server limit of {settings.volume_limit}%.",
+                    ephemeral=True,
+                )
+                return
             await self.bot.storage.update_guild_settings(guild_id, default_volume=clamped_vol)
             await reply(interaction, messages.default_volume_set(clamped_vol), ephemeral=True)
         except StorageError:
@@ -359,7 +393,15 @@ class Settings(commands.Cog):
     ) -> None:
         self._require_manage_guild(interaction)
         grants = self.bot.temporary_dj_grants
-        grants[(member.guild.id, member.id)] = time.monotonic() + minutes * 60
+        now = time.monotonic()
+        for key, expiry in list(grants.items()):
+            if expiry <= now:
+                grants.pop(key, None)
+        grant_key = (member.guild.id, member.id)
+        if grant_key not in grants and len(grants) >= 5_000:
+            await reply(interaction, "The temporary DJ grant limit has been reached.", ephemeral=True)
+            return
+        grants[grant_key] = now + minutes * 60
         await reply(interaction, f"<@{member.id}> has DJ controls for **{minutes} minutes**.", ephemeral=True)
 
     @app_commands.command(name="guest-dj-revoke", description="Revoke a member's temporary DJ controls")

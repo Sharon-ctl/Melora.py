@@ -138,7 +138,7 @@ class PlayerRegistry:
                     player.is_247 = bool(s.voice_247_channel_id)
                     player.restore_queue_enabled = bool(s.restore_queue)
                     player.autoplay = bool(s.autoplay)
-                    player.volume = min(100, max(0, s.default_volume))
+                    player.volume = min(100, max(0, s.default_volume), max(1, getattr(s, "volume_limit", 100)))
                     if s.max_queue > 0:
                         player.queue.max_size = min(s.max_queue, 10_000)
                     player.dj_role_id = s.dj_role_id

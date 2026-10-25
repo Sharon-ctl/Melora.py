@@ -143,7 +143,7 @@ class Music(commands.Cog):
         self.bot = bot
         self._search_cache: TTLCache[str, list[app_commands.Choice[str]]] = TTLCache(max_size=1000, ttl=300.0)
         self._search_rate_limit = CooldownTracker(1.0, max_size=2048)
-        self._queue_vote_state: dict[int, tuple[int, set[int], float]] = {}
+        self._queue_vote_state: dict[int, tuple[QueueItem, set[int], float]] = {}
 
     async def cog_app_command_check(self, interaction: discord.Interaction) -> bool:
         guild = interaction.guild
@@ -993,14 +993,34 @@ class Music(commands.Cog):
         counts: dict[int, int] = {}
         for item in player.queue:
             counts[item.requester_id] = counts.get(item.requester_id, 0) + 1
-        lines = ["### Upcoming Queue Balance", ""]
-        lines.extend(
-            f"<@{user_id}> - **{count}** track{'s' if count != 1 else ''}"
-            for user_id, count in sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
+        ordered = sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
+        page_size = 10
+        page_count = max(1, (len(ordered) + page_size - 1) // page_size)
+
+        def balance_page(page_number: int) -> PaginatedPage:
+            page_number = min(max(1, page_number), page_count)
+            start = (page_number - 1) * page_size
+            entries = ordered[start : start + page_size]
+            items = [
+                f"{'<@' + str(user_id) + '>' if user_id else 'Unknown requester'} - "
+                f"**{count}** track{'s' if count != 1 else ''}"
+                for user_id, count in entries
+            ]
+            return PaginatedPage(
+                title="**Upcoming Queue Balance**",
+                items=items,
+                current_page=page_number,
+                total_pages=page_count,
+                extra_header=f"Total: {len(player.queue)} upcoming tracks",
+            )
+
+        view = PaginatedView(
+            items_provider=balance_page,
+            author_id=interaction.user.id,
+            guild_id=interaction.guild_id or 0,
+            kind="queue_balance",
         )
-        lines.extend(["", f"**Total:** {len(player.queue)} upcoming tracks"])
-        view = BaseCardView(timeout=60, author_id=interaction.user.id, guild_id=interaction.guild_id, kind="queue_balance")
-        view.add_item(create_card_container(TextDisplay("\n".join(lines))))
+        await view.render(1)
         await reply_card(interaction, view, ephemeral=True)
 
     @app_commands.command(name="queue-vote", description="Vote to move an upcoming track to the front")
@@ -1015,14 +1035,28 @@ class Music(commands.Cog):
             raise WrongChannel(channel_id=player.voice_channel_id)
         if position > len(player.queue):
             raise BotUserError("That position is not in the current queue.")
+        if position == 1:
+            await reply(interaction, "That track is already next.", ephemeral=True)
+            return
         guild_id = interaction.guild_id or 0
         now = time.monotonic()
+        for stale_guild, stale_state in list(self._queue_vote_state.items()):
+            if now - stale_state[2] > 60:
+                self._queue_vote_state.pop(stale_guild, None)
         target = player.queue[position - 1]
         state = self._queue_vote_state.get(guild_id)
-        if state is None or state[0] != id(target) or now - state[2] > 60:
+        if state is None or state[0] is not target or now - state[2] > 60:
             votes: set[int] = set()
         else:
             votes = state[1]
+        guild = interaction.guild
+        if guild is not None:
+            current_listeners = {
+                user_id
+                for user_id, voice_state in guild.voice_states.items()
+                if voice_state.channel is not None and voice_state.channel.id == player.voice_channel_id
+            }
+            votes.intersection_update(current_listeners)
         if member.id in votes:
             await reply(interaction, "You already voted for that track.", ephemeral=True)
             return
@@ -1037,7 +1071,7 @@ class Music(commands.Cog):
             else:
                 await reply(interaction, "That track left the queue before the vote passed.", ephemeral=True)
         else:
-            self._queue_vote_state[guild_id] = (id(target), votes, now)
+            self._queue_vote_state[guild_id] = (target, votes, now)
             await reply(interaction, f"Vote recorded: **{len(votes)}/{needed}** needed to move it next.", ephemeral=True)
 
     @app_commands.command(name="remove", description="Remove track(s) from the queue")

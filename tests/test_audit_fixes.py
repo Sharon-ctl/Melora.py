@@ -638,7 +638,7 @@ def test_in_memory_commands_acceleration_no_defer():
             patch("cogs.settings.reply_card", new_callable=AsyncMock) as mock_reply_card,
         ):
             await settings_cog.settings_view.callback(settings_cog, inter)
-            assert not inter.response.defer.called
+            inter.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
             mock_reply_card.assert_called_once()
 
     asyncio.run(scenario())

@@ -204,8 +204,11 @@ class VoiceEvents(commands.Cog):
             await self.bot.registry.destroy(guild_id, "voice channel missing")
         elif humans == 0:
             if player.auto_pause and player.current is not None and not player.paused:
-                await player.pause()
-                player.auto_paused = True
+                try:
+                    await player.pause()
+                    player.auto_paused = True
+                except Exception as exc:
+                    log.warning("guild=%s auto-pause failed: %s", guild_id, type(exc).__name__)
             if not player.has_timer("alone"):
                 player.start_timer("alone", self.bot.cfg.alone_timeout, "alone")
         else:
