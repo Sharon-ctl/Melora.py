@@ -21,13 +21,13 @@ Runtime dependencies are pinned in [`requirements.txt`](requirements.txt). The d
 | --- | --- | --- |
 | [discord.py](https://pypi.org/project/discord.py/) | 2.7.1 | Discord gateway, slash commands, and interactions |
 | [lavalink.py](https://pypi.org/project/lavalink/) | 5.11.1 | Lavalink 4 audio sessions and track playback |
-| [PyNaCl](https://pypi.org/project/PyNaCl/) · [davey](https://pypi.org/project/davey/) | 1.6.2 · 0.1.7 | Voice encryption and Discord DAVE support |
+| [PyNaCl](https://pypi.org/project/PyNaCl/) + [davey](https://pypi.org/project/davey/) | 1.6.2 + 0.1.7 | Voice encryption and Discord DAVE support |
 | [python-dotenv](https://pypi.org/project/python-dotenv/) | 1.2.4 | Environment-based configuration |
 | [psutil](https://pypi.org/project/psutil/) | 7.2.2 | Process and runtime diagnostics |
 | [Pillow](https://pypi.org/project/Pillow/) | 13.0.0 | Profile and music-card image generation |
 | [spotifyscraper](https://pypi.org/project/spotifyscraper/) | 3.9.2 | Spotify metadata and track matching |
 | [orjson](https://pypi.org/project/orjson/) | 3.13.0 | Fast JSON serialization |
-| [aiodns](https://pypi.org/project/aiodns/) · [pycares](https://pypi.org/project/pycares/) | 4.0.4 · 5.2.1 | Asynchronous DNS resolution |
+| [aiodns](https://pypi.org/project/aiodns/) + [pycares](https://pypi.org/project/pycares/) | 4.0.4 + 5.2.1 | Asynchronous DNS resolution |
 | [Brotli](https://pypi.org/project/Brotli/) | 1.2.1 | Compressed HTTP responses |
 
 Development tools: pytest 9.1.1 and Ruff 0.17.1. Dependabot checks Python and GitHub Actions dependencies weekly.
