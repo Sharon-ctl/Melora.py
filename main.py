@@ -127,6 +127,7 @@ class MusicBot(commands.AutoShardedBot):
         # Pre-cached for fast on_message hot path (set once in on_ready)
         self._bot_user_id: int = 0
         self._managed_role_ids: frozenset[int] = frozenset()
+        self.temporary_dj_grants: dict[tuple[int, int], float] = {}
 
     # ------------------------------------------------------------------ startup
 
