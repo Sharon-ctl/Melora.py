@@ -376,6 +376,8 @@ All commands are slash commands only, except mentioning the bot in chat.
 - `/compare-taste user`: Privately compare your top artists with another listener's.
 
 ### Settings Commands (Manage Server)
+- `/setup-wizard [dj_role] [command_channel] [default_volume]`: Apply the selected basic server settings.
+- `/permission-check`: Explain which required permissions Melora is missing in the current context.
 - `/settings view`: View server music settings.
 - `/settings djrole [role]`: Set or clear DJ role.
 - `/settings dj-only enabled`: Enforce DJ role for playback controls.

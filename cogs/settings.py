@@ -88,6 +88,72 @@ class Settings(commands.Cog):
         view.add_item(container)
         await reply_card(interaction, view, ephemeral=True)
 
+    @app_commands.command(name="setup-wizard", description="Set the main DJ, command channel, and starting volume")
+    @app_commands.describe(
+        dj_role="Optional role that controls DJ-only features",
+        command_channel="Optional channel for music commands",
+        default_volume="Optional starting volume from 1 to 100",
+    )
+    @app_commands.guild_only()
+    async def setup_wizard(
+        self,
+        interaction: discord.Interaction,
+        dj_role: discord.Role | None = None,
+        command_channel: discord.TextChannel | None = None,
+        default_volume: app_commands.Range[int, 1, 100] | None = None,
+    ) -> None:
+        self._require_manage_guild(interaction)
+        fields: dict[str, int] = {}
+        if dj_role is not None:
+            fields["dj_role_id"] = dj_role.id
+        if command_channel is not None:
+            fields["restrict_channel_id"] = command_channel.id
+        if default_volume is not None:
+            fields["default_volume"] = default_volume
+        if not fields:
+            await reply(interaction, "Choose at least one setup option to update.", ephemeral=True)
+            return
+        try:
+            settings = await self.bot.storage.update_guild_settings(interaction.guild_id or 0, **fields)
+            player = self.bot.registry.get(interaction.guild_id or 0)
+            if player is not None:
+                player.dj_role_id = settings.dj_role_id
+                if player.current is None:
+                    player.volume = settings.default_volume
+            lines = ["### Setup Updated"]
+            if dj_role is not None:
+                lines.append(f"DJ role: <@&{dj_role.id}>")
+            if command_channel is not None:
+                lines.append(f"Music command channel: <#{command_channel.id}>")
+            if default_volume is not None:
+                lines.append(f"Starting volume: `{default_volume}%`")
+            await reply(interaction, "\n".join(lines), ephemeral=True)
+        except StorageError:
+            await reply(interaction, messages.storage_unavailable(), ephemeral=True)
+
+    @app_commands.command(name="permission-check", description="Check Melora's permissions in this server")
+    @app_commands.guild_only()
+    async def permission_check(self, interaction: discord.Interaction) -> None:
+        guild = interaction.guild
+        if guild is None:
+            await reply(interaction, messages.not_in_guild(), ephemeral=True)
+            return
+        checks = {
+            "View channel": interaction.app_permissions.view_channel,
+            "Send messages": interaction.app_permissions.send_messages,
+            "Embed links": interaction.app_permissions.embed_links,
+        }
+        voice = getattr(getattr(interaction.user, "voice", None), "channel", None)
+        if voice is not None and guild.me is not None:
+            voice_permissions = voice.permissions_for(guild.me)
+            checks.update({"Connect to voice": voice_permissions.connect, "Speak": voice_permissions.speak})
+        missing = [name for name, allowed in checks.items() if not allowed]
+        if missing:
+            result = "Missing permissions: " + ", ".join(f"**{name}**" for name in missing)
+        else:
+            result = "Melora has the required permissions for this channel."
+        await reply(interaction, result, ephemeral=True)
+
     @settings_group.command(name="djrole", description="Set or clear the DJ role")
     @app_commands.describe(role="Role to set as DJ (leave empty to clear)")
     @app_commands.guild_only()
