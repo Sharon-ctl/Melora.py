@@ -616,6 +616,7 @@ def build_nowplaying_container(
     is_paused: bool = False,
     has_history: bool = False,
     artwork_url: str | None = None,
+    dedication: str = "",
     **kwargs: Any,
 ) -> Container[Any]:
     """Build the Components V2 container for the now playing card.
@@ -650,6 +651,9 @@ def build_nowplaying_container(
         f"**Requested by:** <@{requester_id}>",
         f"**Duration:** `{duration_str}`",
     ]
+    if dedication:
+        safe_dedication = discord.utils.escape_mentions(discord.utils.escape_markdown(" ".join(dedication.split())[:180]))
+        content_lines.append(f"**Dedicated:** {safe_dedication}")
     music_markup = get_emoji_markup("music")
     state_str = "**Paused**" if is_paused else "**Playing**"
     header_text = f"{music_markup} {state_str}" if music_markup else state_str
@@ -785,6 +789,7 @@ class NowPlayingView(LayoutView):
             is_paused=paused,
             has_history=history,
             artwork_url=artwork_url or bot_avatar,
+            dedication=getattr(player, "dedication", ""),
         )
         self.clear_items()
         self.add_item(container)

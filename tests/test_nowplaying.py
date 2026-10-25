@@ -415,6 +415,16 @@ def test_card_builder_mention_and_duration_format():
     assert lines[2] == "**Duration:** `3:42`"
 
 
+def test_card_builder_dedication_escapes_mentions_and_markdown():
+    from utils.components_v2 import Section, TextDisplay, build_nowplaying_container
+
+    container = build_nowplaying_container(title="Track", requester_id=1, dedication="@everyone *congrats*")
+    section = next(c for c in container.children if isinstance(c, Section))
+    body = next(c for c in section.children if isinstance(c, TextDisplay) and "Dedicated" in c.content)
+    assert "@\u200beveryone" in body.content
+    assert r"\*congrats\*" in body.content
+
+
 def test_card_builder_button_order_and_styles():
     import discord
     from utils.components_v2 import ActionRow, Button, build_nowplaying_action_row

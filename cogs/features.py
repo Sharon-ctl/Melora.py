@@ -20,9 +20,10 @@ from core.spotify import parse_spotify_url
 from core.storage import StoredTrack
 from utils.profile_canvas import render_profile, render_stats
 from utils.checks import check_bot_channel_permissions, guild_member, require_dj, user_voice_channel
-from utils.errors import StageUnsupported, WrongChannel
+from utils.components_v2 import BaseCardView, TextDisplay, create_card_container, reply_card
+from utils.errors import BotUserError, StageUnsupported, WrongChannel
 from utils.interaction import reply, safe_defer
-from utils.text import clean, truncate
+from utils.text import clean, format_duration, truncate
 
 if TYPE_CHECKING:
     from main import MusicBot
@@ -100,6 +101,55 @@ class Features(commands.Cog):
     def __init__(self, bot: MusicBot) -> None:
         self.bot = bot
         self._karaoke: dict[int, tuple[discord.Message, asyncio.Task[None]]] = {}
+
+    @app_commands.command(name="dedicate", description="Add or clear a dedication on the now-playing card")
+    @app_commands.describe(message="A short dedication (leave empty to clear it)")
+    @app_commands.guild_only()
+    async def dedicate(self, interaction: discord.Interaction, message: app_commands.Range[str, 1, 180] | None = None) -> None:
+        member, _ = self._voice(interaction)
+        player = self.bot.registry.get(interaction.guild_id or 0)
+        if player is None or player.current is None:
+            raise BotUserError("Nothing is playing right now.")
+        if member.id != player.current.requester_id:
+            require_dj(self.bot, self.bot.cfg, member, dj_role_id=player.dj_role_id, dj_only=player.dj_only)
+        player.dedication = clean(message or "")[:180]
+        player.schedule_card_update()
+        response = "Dedication cleared." if not player.dedication else "Dedication added to the now-playing card."
+        await reply(interaction, response, ephemeral=True)
+
+    @app_commands.command(name="session-recap", description="Summarize the current player's recent session")
+    @app_commands.guild_only()
+    async def session_recap(self, interaction: discord.Interaction) -> None:
+        guild_id = interaction.guild_id or 0
+        player = self.bot.registry.get(guild_id)
+        if player is None:
+            await reply(interaction, "There is no active music session in this server.", ephemeral=True)
+            return
+        recent = player.queue.get_history(50)
+        tracks = list(recent)
+        if player.current is not None:
+            tracks.append(player.current)
+        requesters: dict[int, int] = {}
+        for item in tracks:
+            if item.requester_id:
+                requesters[item.requester_id] = requesters.get(item.requester_id, 0) + 1
+        top = sorted(requesters.items(), key=lambda entry: (-entry[1], entry[0]))[:3]
+        top_text = ", ".join(f"<@{uid}> ({count})" for uid, count in top) or "No requester data"
+        estimated_ms = sum(max(0, item.duration_ms) for item in tracks if not item.is_stream)
+        recent_titles = [f"- {truncate(item.title, 65)}" for item in tracks[-5:]]
+        lines = [
+            "### Listening Session Recap",
+            f"**Player uptime:** `{format_duration(int(player.age() * 1000))}`",
+            f"**Tracks represented:** `{len(tracks)}` (up to 50 recent completed plus current)",
+            f"**Estimated track time:** `{format_duration(estimated_ms)}`",
+            f"**Top requesters:** {top_text}",
+            "",
+            "**Recent tracks**",
+            *(reversed(recent_titles) if recent_titles else ["No tracks played yet."]),
+        ]
+        view = BaseCardView(timeout=90, author_id=interaction.user.id, guild_id=guild_id, kind="session_recap")
+        view.add_item(create_card_container(TextDisplay("\n".join(lines))))
+        await reply_card(interaction, view, ephemeral=True)
 
     def _voice(self, interaction: discord.Interaction) -> tuple[discord.Member, discord.VoiceChannel | discord.StageChannel]:
         member = guild_member(interaction)

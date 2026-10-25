@@ -97,6 +97,7 @@ class GuildPlayer:
         self.current_eq: str | None = None
         self.dj_role_id: int = 0
         self.dj_only: bool = False
+        self.dedication: str = ""
         # Now playing card state (IDs only, never Discord objects)
         self.nowplaying_channel_id: int | None = None
         self.nowplaying_message_id: int | None = None

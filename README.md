@@ -365,6 +365,8 @@ All commands are slash commands only, except mentioning the bot in chat.
 - `/requests list`: Show the pending request card (DJ role / DJ-only permissions apply).
 - `/requests approve request_id`: Add a pending request to the queue.
 - `/requests reject request_id`: Decline and remove a pending request.
+- `/dedicate [message]`: Add or clear a short dedication on the live now-playing card (requester or DJ).
+- `/session-recap`: Show a Components V2 summary of the current player's recent tracks, estimated track time, and top requesters.
 
 ### Settings Commands (Manage Server)
 - `/settings view`: View server music settings.
