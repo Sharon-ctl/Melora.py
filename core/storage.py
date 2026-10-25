@@ -184,6 +184,20 @@ SCHEMA_MIGRATIONS = [
     """
     ALTER TABLE user_listening_tracks ADD COLUMN last_played_at REAL NOT NULL DEFAULT 0;
     """,
+    # Migration 9: Persist moderated music requests across restarts.
+    """
+    CREATE TABLE IF NOT EXISTS track_requests (
+        request_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id INTEGER NOT NULL,
+        requester_id INTEGER NOT NULL,
+        uri TEXT NOT NULL,
+        title TEXT NOT NULL,
+        artist TEXT NOT NULL DEFAULT '',
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        created_at REAL NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_track_requests_guild ON track_requests (guild_id, request_id);
+    """,
 ]
 
 
@@ -558,6 +572,63 @@ class Storage:
         await self._run(_del, is_write=True)
 
     # ---------------------------------------------------------- favorites
+    async def add_track_request(self, guild_id: int, requester_id: int, track: StoredTrack, limit: int = 50) -> int:
+        def _add(conn: sqlite3.Connection) -> int:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM track_requests WHERE guild_id = ?", (guild_id,))
+            if int(cur.fetchone()[0]) >= limit:
+                raise StorageError("The server request list is full. Please try again later.")
+            cur.execute(
+                "INSERT INTO track_requests "
+                "(guild_id, requester_id, uri, title, artist, duration_ms, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (guild_id, requester_id, track.uri, track.title, track.artist, track.duration_ms, time.time()),
+            )
+            return int(cur.lastrowid)
+
+        return await self._run(_add, is_write=True)
+
+    async def list_track_requests(self, guild_id: int, limit: int = 50) -> list[tuple[int, int, StoredTrack]]:
+        def _list(conn: sqlite3.Connection) -> list[tuple[int, int, StoredTrack]]:
+            rows = conn.execute(
+                "SELECT request_id, requester_id, uri, title, artist, duration_ms "
+                "FROM track_requests WHERE guild_id = ? ORDER BY request_id LIMIT ?",
+                (guild_id, limit),
+            ).fetchall()
+            return [(r[0], r[1], StoredTrack(r[2], r[3], r[4], r[5], r[1])) for r in rows]
+
+        return await self._run(_list)
+
+    async def get_track_request(self, guild_id: int, request_id: int) -> tuple[int, StoredTrack] | None:
+        def _get(conn: sqlite3.Connection) -> tuple[int, StoredTrack] | None:
+            row = conn.execute(
+                "SELECT requester_id, uri, title, artist, duration_ms FROM track_requests WHERE guild_id = ? AND request_id = ?",
+                (guild_id, request_id),
+            ).fetchone()
+            return (row[0], StoredTrack(row[1], row[2], row[3], row[4], row[0])) if row else None
+
+        return await self._run(_get)
+
+    async def delete_track_request(self, guild_id: int, request_id: int) -> bool:
+        def _delete(conn: sqlite3.Connection) -> bool:
+            cur = conn.execute("DELETE FROM track_requests WHERE guild_id = ? AND request_id = ?", (guild_id, request_id))
+            return cur.rowcount > 0
+
+        return await self._run(_delete, is_write=True)
+
+    async def pop_track_request(self, guild_id: int, request_id: int) -> tuple[int, StoredTrack] | None:
+        def _pop(conn: sqlite3.Connection) -> tuple[int, StoredTrack] | None:
+            row = conn.execute(
+                "SELECT requester_id, uri, title, artist, duration_ms FROM track_requests WHERE guild_id = ? AND request_id = ?",
+                (guild_id, request_id),
+            ).fetchone()
+            if row is None:
+                return None
+            conn.execute("DELETE FROM track_requests WHERE guild_id = ? AND request_id = ?", (guild_id, request_id))
+            return row[0], StoredTrack(row[1], row[2], row[3], row[4], row[0])
+
+        return await self._run(_pop, is_write=True)
+
     async def get_favorites(self, user_id: int) -> list[StoredTrack]:
         def _get(conn: sqlite3.Connection) -> list[StoredTrack]:
             cur = conn.cursor()
@@ -949,6 +1020,7 @@ class Storage:
             )
             cur.execute("DELETE FROM playlists WHERE user_id = ?", (user_id,))
             cur.execute("DELETE FROM user_play_history WHERE user_id = ?", (user_id,))
+            cur.execute("DELETE FROM track_requests WHERE requester_id = ?", (user_id,))
             cur.execute("DELETE FROM playlist_shares WHERE recipient_id = ?", (user_id,))
             cur.execute("DELETE FROM user_listening_tracks WHERE user_id = ?", (user_id,))
             cur.execute("DELETE FROM user_listening_stats WHERE user_id = ?", (user_id,))
@@ -1162,6 +1234,7 @@ class Storage:
                 "playlists": [],
                 "playlist_shares": [],
                 "queue_snapshots": [],
+                "track_requests": [],
                 "user_play_history": [],
                 "user_listening_stats": [],
                 "user_listening_tracks": [],
@@ -1197,6 +1270,11 @@ class Storage:
             for row in cur.fetchall():
                 export["queue_snapshots"].append(dict(zip(cols, row)))
 
+            cur.execute("SELECT * FROM track_requests")
+            cols = [d[0] for d in cur.description]
+            for row in cur.fetchall():
+                export["track_requests"].append(dict(zip(cols, row)))
+
             cur.execute("SELECT * FROM user_play_history")
             cols = [d[0] for d in cur.description]
             for row in cur.fetchall():
@@ -1219,5 +1297,6 @@ class Storage:
             cur = conn.cursor()
             cur.execute("DELETE FROM guild_settings WHERE guild_id = ?", (guild_id,))
             cur.execute("DELETE FROM queue_snapshots WHERE guild_id = ?", (guild_id,))
+            cur.execute("DELETE FROM track_requests WHERE guild_id = ?", (guild_id,))
 
         await self._run(_del, is_write=True)

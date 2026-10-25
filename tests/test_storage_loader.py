@@ -122,6 +122,31 @@ def test_storage_lifecycle_and_crud(tmp_path: Path):
     run_async(scenario())
 
 
+def test_moderated_requests_storage(tmp_path: Path):
+    async def scenario():
+        storage = Storage(tmp_path / "requests.db")
+        storage.start()
+        track = StoredTrack(uri="https://example.test/song", title="Song", artist="Artist", duration_ms=123000)
+        request_id = await storage.add_track_request(77, 42, track)
+        rows = await storage.list_track_requests(77)
+        assert len(rows) == 1
+        assert rows[0][0] == request_id
+        assert rows[0][1] == 42
+        assert rows[0][2].title == "Song"
+        assert (await storage.get_track_request(77, request_id))[1].uri == track.uri
+        assert await storage.get_track_request(78, request_id) is None
+        assert await storage.delete_track_request(77, request_id) is True
+        assert await storage.delete_track_request(77, request_id) is False
+        assert await storage.list_track_requests(77) == []
+        claimed_id = await storage.add_track_request(77, 42, track)
+        claimed = await storage.pop_track_request(77, claimed_id)
+        assert claimed is not None and claimed[1].title == "Song"
+        assert await storage.pop_track_request(77, claimed_id) is None
+        await storage.close()
+
+    run_async(scenario())
+
+
 def test_user_play_history_storage(tmp_path: Path):
     async def scenario():
         db_path = tmp_path / "history_test.db"

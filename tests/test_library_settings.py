@@ -233,6 +233,7 @@ async def test_privacy_and_reset(storage: Storage):
     await storage.add_favorite(user_id, fav, limit=5)
     await storage.create_playlist(user_id, "My List", limit=5)
     await storage.record_user_play_history(user_id, title="History 1", artist="Artist 1", uri="https://youtu.be/hist1")
+    pending = await storage.add_track_request(222, user_id, fav)
 
     # Populate other user data
     await storage.record_user_play_history(other_user, title="Other Hist", artist="Artist", uri="https://youtu.be/other")
@@ -241,6 +242,7 @@ async def test_privacy_and_reset(storage: Storage):
     assert len(await storage.get_favorites(user_id)) == 1
     assert len(await storage.list_playlists(user_id)) == 1
     assert len(await storage.get_user_play_history(user_id)) == 1
+    assert len(await storage.list_track_requests(222)) == 1
 
     # Guild removal does NOT touch user history rows
     await storage.delete_guild_data(1234)
@@ -251,6 +253,7 @@ async def test_privacy_and_reset(storage: Storage):
     assert await storage.get_favorites(user_id) == []
     assert await storage.list_playlists(user_id) == []
     assert await storage.get_user_play_history(user_id) == []
+    assert await storage.get_track_request(222, pending) is None
     assert storage._history_cache.get(user_id) is None
 
     # Other user data is untouched

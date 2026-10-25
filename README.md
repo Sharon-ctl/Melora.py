@@ -360,6 +360,12 @@ All commands are slash commands only, except mentioning the bot in chat.
 - `/playlist add name [query]`: Add query or current track to playlist.
 - `/playlist remove name position`: Remove track from playlist.
 
+### Community Commands
+- `/requests add query`: Submit one playable track for DJ review. Requests persist across restarts and are limited to 50 per server.
+- `/requests list`: Show the pending request card (DJ role / DJ-only permissions apply).
+- `/requests approve request_id`: Add a pending request to the queue.
+- `/requests reject request_id`: Decline and remove a pending request.
+
 ### Settings Commands (Manage Server)
 - `/settings view`: View server music settings.
 - `/settings djrole [role]`: Set or clear DJ role.
@@ -386,8 +392,8 @@ All commands are slash commands only, except mentioning the bot in chat.
 - `/status`: Components V2 card with latency, uptime, Lavalink node stats, voice bitrate, and owner diagnostics.
 - `/help`: Dynamically generated command list from tree.
 - `/errors [count]`: Owner only: bounded in-memory ring buffer of recent unhandled error logs.
-- `/privacy`: Lists what data is stored (favorites, playlists, and titles and links of tracks requested, kept per user across servers, at most 50) and how to delete it.
-- `/reset`: Delete all your stored data (favorites, playlists, and play history) with secondary button confirmation.
+- `/privacy`: Lists stored data, including pending server requests, and explains how `/reset` removes your personal entries.
+- `/reset`: Delete your personal favorites, playlists, play history, listening stats, and pending requests with secondary button confirmation.
 
 ### Bot Mention Reply
 - When a user mentions only the bot in a text channel, the bot replies with a compact Components V2 card pointing to `/help`.

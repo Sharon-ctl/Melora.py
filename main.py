@@ -39,7 +39,16 @@ from utils.supervisor import TaskSupervisor
 
 log = logging.getLogger("musicbot")
 
-EXTENSIONS = ("cogs.music", "cogs.voice_events", "cogs.admin", "cogs.library", "cogs.settings", "cogs.filters", "cogs.features")
+EXTENSIONS = (
+    "cogs.music",
+    "cogs.voice_events",
+    "cogs.admin",
+    "cogs.library",
+    "cogs.settings",
+    "cogs.filters",
+    "cogs.features",
+    "cogs.requests",
+)
 SHUTDOWN_STEP_TIMEOUT = 20.0
 SHUTDOWN_TOTAL_TIMEOUT = 90.0
 EXIT_OK = 0
