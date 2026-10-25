@@ -10,6 +10,7 @@ import re
 import time
 import asyncio
 import hashlib
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import discord
@@ -184,6 +185,47 @@ class Features(commands.Cog):
         if not notes:
             lines.append("No track notes saved yet. Use `/track-note` while a song is playing.")
         view = BaseCardView(timeout=90, author_id=interaction.user.id, guild_id=interaction.guild_id, kind="track_notes")
+        view.add_item(create_card_container(TextDisplay("\n".join(lines))))
+        await reply_card(interaction, view, ephemeral=True)
+
+    @app_commands.command(name="last-heard", description="Find when you last listened to a track")
+    @app_commands.describe(query="Track title or artist to search in your listening history")
+    @app_commands.guild_only()
+    async def last_heard(self, interaction: discord.Interaction, query: app_commands.Range[str, 1, 100]) -> None:
+        history = await self.bot.storage.get_user_play_history(interaction.user.id, limit=50)
+        needle = clean(query).casefold()
+        match = next((entry for entry in history if needle in f"{entry.title} {entry.artist}".casefold()), None)
+        if match is None:
+            await reply(interaction, "No matching track was found in your recent listening history.", ephemeral=True)
+            return
+        timestamp = datetime.fromtimestamp(match.played_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        artist = f" by **{truncate(match.artist)}**" if match.artist else ""
+        result = f"You last heard **{truncate(match.title)}**{artist} on `{timestamp}`. "
+        result += "This searches your personal history across servers."
+        await reply(
+            interaction,
+            result,
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="compare-taste", description="Privately compare your top artists with another listener")
+    @app_commands.describe(user="The listener to compare with")
+    @app_commands.guild_only()
+    async def compare_taste(self, interaction: discord.Interaction, user: discord.User) -> None:
+        if user.id == interaction.user.id:
+            await reply(interaction, "Choose another user to compare listening tastes.", ephemeral=True)
+            return
+        mine, theirs = await asyncio.gather(
+            self.bot.storage.get_user_listening_stats(interaction.user.id),
+            self.bot.storage.get_user_listening_stats(user.id),
+        )
+        their_artists = {artist.casefold() for artist, _ in theirs["artists"]}
+        shared = [(artist, count) for artist, count in mine["artists"] if artist.casefold() in their_artists]
+        lines = ["### Taste Overlap", f"You and <@{user.id}> share **{len(shared)}** top artists.", ""]
+        lines.extend(f"- **{truncate(artist, 60)}** ({count} of your plays)" for artist, count in shared[:8])
+        if not shared:
+            lines.append("No shared top artists yet. Keep listening and check again later.")
+        view = BaseCardView(timeout=90, author_id=interaction.user.id, guild_id=interaction.guild_id, kind="taste_compare")
         view.add_item(create_card_container(TextDisplay("\n".join(lines))))
         await reply_card(interaction, view, ephemeral=True)
 

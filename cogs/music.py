@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import time
 from typing import TYPE_CHECKING, Any
 
 import discord
@@ -142,6 +143,7 @@ class Music(commands.Cog):
         self.bot = bot
         self._search_cache: TTLCache[str, list[app_commands.Choice[str]]] = TTLCache(max_size=1000, ttl=300.0)
         self._search_rate_limit = CooldownTracker(1.0, max_size=2048)
+        self._queue_vote_state: dict[int, tuple[int, set[int], float]] = {}
 
     async def cog_app_command_check(self, interaction: discord.Interaction) -> bool:
         guild = interaction.guild
@@ -1000,6 +1002,43 @@ class Music(commands.Cog):
         view = BaseCardView(timeout=60, author_id=interaction.user.id, guild_id=interaction.guild_id, kind="queue_balance")
         view.add_item(create_card_container(TextDisplay("\n".join(lines))))
         await reply_card(interaction, view, ephemeral=True)
+
+    @app_commands.command(name="queue-vote", description="Vote to move an upcoming track to the front")
+    @app_commands.describe(position="Track position shown by /queue")
+    @app_commands.guild_only()
+    async def queue_vote(self, interaction: discord.Interaction, position: app_commands.Range[int, 1, 1000]) -> None:
+        member = guild_member(interaction)
+        player = self.bot.registry.get(interaction.guild_id or 0)
+        if player is None:
+            raise NothingPlaying()
+        if member.voice is None or member.voice.channel is None or member.voice.channel.id != player.voice_channel_id:
+            raise WrongChannel(channel_id=player.voice_channel_id)
+        if position > len(player.queue):
+            raise BotUserError("That position is not in the current queue.")
+        guild_id = interaction.guild_id or 0
+        now = time.monotonic()
+        target = player.queue[position - 1]
+        state = self._queue_vote_state.get(guild_id)
+        if state is None or state[0] != id(target) or now - state[2] > 60:
+            votes: set[int] = set()
+        else:
+            votes = state[1]
+        if member.id in votes:
+            await reply(interaction, "You already voted for that track.", ephemeral=True)
+            return
+        votes.add(member.id)
+        humans = self.bot.backend.humans_in_channel(guild_id, player.voice_channel_id) or 1
+        needed = max(1, humans // 2 + 1)
+        if len(votes) >= needed:
+            moved = await player.move_item_to_front(target)
+            self._queue_vote_state.pop(guild_id, None)
+            if moved:
+                await reply(interaction, f"Vote passed. **{truncate(target.title)}** is now next.")
+            else:
+                await reply(interaction, "That track left the queue before the vote passed.", ephemeral=True)
+        else:
+            self._queue_vote_state[guild_id] = (id(target), votes, now)
+            await reply(interaction, f"Vote recorded: **{len(votes)}/{needed}** needed to move it next.", ephemeral=True)
 
     @app_commands.command(name="remove", description="Remove track(s) from the queue")
     @app_commands.describe(position="Position shown in /queue", count="Number of tracks to remove (default 1)")

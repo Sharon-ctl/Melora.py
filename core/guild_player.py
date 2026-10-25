@@ -97,6 +97,8 @@ class GuildPlayer:
         self.current_eq: str | None = None
         self.dj_role_id: int = 0
         self.dj_only: bool = False
+        self.auto_pause: bool = False
+        self.auto_paused: bool = False
         self.dedication: str = ""
         # Now playing card state (IDs only, never Discord objects)
         self.nowplaying_channel_id: int | None = None
@@ -1169,6 +1171,16 @@ class GuildPlayer:
                 return item
             except IndexError:
                 raise BotUserError("Invalid position in queue.") from None
+
+    async def move_item_to_front(self, target: QueueItem) -> bool:
+        """Move a specific queued object to the front, tolerating concurrent queue edits."""
+        async with self.lock:
+            for position, item in enumerate(self.queue, start=1):
+                if item is target:
+                    self.queue.move(position, 1)
+                    self.schedule_snapshot()
+                    return True
+            return False
 
     async def swap(self, pos1: int, pos2: int) -> tuple[QueueItem, QueueItem]:
         async with self.lock:

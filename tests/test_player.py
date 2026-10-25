@@ -38,6 +38,20 @@ def test_enqueue_starts_first_track_and_tracks_position():
     run(scenario())
 
 
+def test_move_item_to_front_uses_object_identity_after_queue_reordering():
+    async def scenario():
+        registry, _, _ = build()
+        player = await registry.get_or_create(1, 10, 20)
+        first, target, last = items(3)
+        player.queue.add_many([first, target, last])
+        assert await player.move_item_to_front(target) is True
+        assert list(player.queue) == [target, first, last]
+        assert await player.move_item_to_front(items(1)[0]) is False
+        await registry.destroy_all("test")
+
+    run(scenario())
+
+
 def test_track_end_advances_and_empty_queue_sets_idle_timer():
     async def scenario():
         registry, backend, _ = build()

@@ -47,9 +47,10 @@ def test_storage_lifecycle_and_crud(tmp_path: Path):
         assert settings.guild_id == 123
         assert settings.default_volume == 100
 
-        updated = await storage.update_guild_settings(123, autoplay=True, volume_limit=80)
+        updated = await storage.update_guild_settings(123, autoplay=True, volume_limit=80, auto_pause=True)
         assert updated.autoplay is True
         assert updated.volume_limit == 80
+        assert updated.auto_pause is True
 
         # Favorites
         track1 = StoredTrack(uri="http://example.com/1", title="Song 1", artist="Artist 1", duration_ms=180000)

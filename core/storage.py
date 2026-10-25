@@ -67,6 +67,7 @@ class GuildSettings:
     autoplay: bool = False
     default_volume: int = 100
     voice_status_enabled: bool = True
+    auto_pause: bool = False
 
 
 SCHEMA_MIGRATIONS = [
@@ -209,6 +210,10 @@ SCHEMA_MIGRATIONS = [
         PRIMARY KEY (user_id, track_key)
     );
     CREATE INDEX IF NOT EXISTS idx_user_track_notes_updated ON user_track_notes (user_id, updated_at DESC);
+    """,
+    # Migration 11: Per-server auto-pause when a voice channel becomes empty.
+    """
+    ALTER TABLE guild_settings ADD COLUMN auto_pause INTEGER NOT NULL DEFAULT 0;
     """,
 ]
 
@@ -473,7 +478,7 @@ class Storage:
                 """
                 SELECT guild_id, voice_247_channel_id, dj_role_id, dj_only, volume_limit,
                        max_duration, max_queue, restrict_channel_id, restore_queue, autoplay, default_volume,
-                       voice_status_enabled
+                       voice_status_enabled, auto_pause
                 FROM guild_settings WHERE guild_id = ?
                 """,
                 (guild_id,),
@@ -494,6 +499,7 @@ class Storage:
                 autoplay=bool(row[9]),
                 default_volume=row[10],
                 voice_status_enabled=bool(row[11]) if len(row) > 11 else True,
+                auto_pause=bool(row[12]) if len(row) > 12 else False,
             )
 
         settings = await self._run(_get)
@@ -513,6 +519,7 @@ class Storage:
             "autoplay",
             "default_volume",
             "voice_status_enabled",
+            "auto_pause",
         }
         for k in fields:
             if k not in allowed:
@@ -550,7 +557,7 @@ class Storage:
             """
             SELECT guild_id, voice_247_channel_id, dj_role_id, dj_only, volume_limit,
                    max_duration, max_queue, restrict_channel_id, restore_queue, autoplay, default_volume,
-                   voice_status_enabled
+                   voice_status_enabled, auto_pause
             FROM guild_settings WHERE guild_id = ?
             """,
             (guild_id,),
@@ -571,6 +578,7 @@ class Storage:
             autoplay=bool(row[9]),
             default_volume=row[10],
             voice_status_enabled=bool(row[11]) if len(row) > 11 else True,
+            auto_pause=bool(row[12]) if len(row) > 12 else False,
         )
 
     async def delete_guild(self, guild_id: int) -> None:

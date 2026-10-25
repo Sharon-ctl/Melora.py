@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING
 
 import discord
@@ -79,6 +80,7 @@ class Settings(commands.Cog):
             messages.server_setting_row("24/7 Mode", voice_247_str, is_mention=bool(s.voice_247_channel_id)),
             messages.server_setting_row("Crash Recovery Queue Checkpoints", "Enabled" if s.restore_queue else "Disabled"),
             messages.server_setting_row("Voice Channel Status", "Enabled" if s.voice_status_enabled else "Disabled"),
+            messages.server_setting_row("Auto Pause When Empty", "Enabled" if s.auto_pause else "Disabled"),
         ]
         text_disp = TextDisplay("\n".join(lines))
         container = create_card_container(text_disp)
@@ -245,6 +247,25 @@ class Settings(commands.Cog):
         except StorageError:
             await reply(interaction, messages.storage_unavailable(), ephemeral=True)
 
+    @settings_group.command(
+        name="auto-pause", description="Pause when the voice channel empties and resume when listeners return"
+    )
+    @app_commands.describe(enabled="Whether to pause on empty and resume when someone rejoins")
+    @app_commands.guild_only()
+    async def settings_auto_pause(self, interaction: discord.Interaction, enabled: bool) -> None:
+        self._require_manage_guild(interaction)
+        guild_id = interaction.guild_id or 0
+        try:
+            await self.bot.storage.update_guild_settings(guild_id, auto_pause=enabled)
+            player = self.bot.registry.get(guild_id)
+            if player is not None:
+                player.auto_pause = enabled
+                if not enabled:
+                    player.auto_paused = False
+            await reply(interaction, f"Auto-pause {'enabled' if enabled else 'disabled'}.", ephemeral=True)
+        except StorageError:
+            await reply(interaction, messages.storage_unavailable(), ephemeral=True)
+
     # -------------------------------------------------------- /defaultvolume
     @app_commands.command(name="defaultvolume", description="Set the default starting volume for this server (1-100)")
     @app_commands.describe(volume="Volume level (1-100)")
@@ -263,6 +284,26 @@ class Settings(commands.Cog):
             await reply(interaction, messages.default_volume_set(clamped_vol), ephemeral=True)
         except StorageError:
             await reply(interaction, messages.storage_unavailable(), ephemeral=True)
+
+    @app_commands.command(name="guest-dj", description="Temporarily grant DJ controls to a member")
+    @app_commands.describe(member="Member to grant DJ controls", minutes="Grant duration (5 to 480 minutes)")
+    @app_commands.guild_only()
+    async def guest_dj(
+        self, interaction: discord.Interaction, member: discord.Member, minutes: app_commands.Range[int, 5, 480]
+    ) -> None:
+        self._require_manage_guild(interaction)
+        grants = self.bot.temporary_dj_grants
+        grants[(member.guild.id, member.id)] = time.monotonic() + minutes * 60
+        await reply(interaction, f"<@{member.id}> has DJ controls for **{minutes} minutes**.", ephemeral=True)
+
+    @app_commands.command(name="guest-dj-revoke", description="Revoke a member's temporary DJ controls")
+    @app_commands.describe(member="Member to revoke")
+    @app_commands.guild_only()
+    async def guest_dj_revoke(self, interaction: discord.Interaction, member: discord.Member) -> None:
+        self._require_manage_guild(interaction)
+        removed = self.bot.temporary_dj_grants.pop((member.guild.id, member.id), None) is not None
+        text = f"Temporary DJ access removed for <@{member.id}>." if removed else "That member has no temporary DJ grant."
+        await reply(interaction, text, ephemeral=True)
 
     # ----------------------------------------------------------------- /247
     @app_commands.command(name="247", description="Toggle 24/7 mode to stay connected without leaving")

@@ -143,6 +143,7 @@ class PlayerRegistry:
                         player.queue.max_size = min(s.max_queue, 10_000)
                     player.dj_role_id = s.dj_role_id
                     player.dj_only = bool(s.dj_only)
+                    player.auto_pause = bool(getattr(s, "auto_pause", False))
                 except Exception as exc:
                     log.debug("guild=%s failed loading settings on player creation: %s", guild_id, exc)
             await backend.connect(guild_id, voice_channel_id)

@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import discord
+import time
 from discord import app_commands
 
 from config import Config
@@ -44,6 +45,14 @@ def require_dj(
     dj_only: bool = False,
 ) -> None:
     """Raise unless DJ mode is off, the member is privileged, or has the DJ role."""
+    grants = getattr(bot, "temporary_dj_grants", None)
+    if grants is not None:
+        guild = getattr(member, "guild", None)
+        grant_key = (getattr(guild, "id", 0), member.id)
+        expires_at = grants.get(grant_key, 0.0)
+        if expires_at > time.monotonic():
+            return
+        grants.pop(grant_key, None)
     effective_role = dj_role_id or cfg.dj_role_id
     if effective_role == 0 and not dj_only:
         return

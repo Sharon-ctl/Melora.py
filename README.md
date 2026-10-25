@@ -337,6 +337,7 @@ All commands are slash commands only, except mentioning the bot in chat.
 - `/queue [page]`: Components V2 card with pagination buttons (< and >).
 - `/queue-forecast position`: Estimate how long until an upcoming track starts (live streams excluded from the estimate).
 - `/queue-balance`: Show the number of upcoming tracks added by each requester.
+- `/queue-vote position`: Vote with other listeners to move an upcoming track to the front; votes expire after one minute.
 - `/remove position [count]`: Remove track(s) at position.
 - `/clear`: Clear upcoming tracks.
 - `/shuffle`: Shuffle upcoming tracks.
@@ -371,6 +372,8 @@ All commands are slash commands only, except mentioning the bot in chat.
 - `/session-recap`: Show a Components V2 summary of the current player's recent tracks, estimated track time, and top requesters.
 - `/track-note [note]`: Save or privately view your note for the currently playing track.
 - `/my-track-notes`: List your private track notes.
+- `/last-heard query`: Search your recent personal listening history across servers.
+- `/compare-taste user`: Privately compare your top artists with another listener's.
 
 ### Settings Commands (Manage Server)
 - `/settings view`: View server music settings.
@@ -382,7 +385,9 @@ All commands are slash commands only, except mentioning the bot in chat.
 - `/settings restrict [channel]`: Restrict music commands to a channel.
 - `/settings restore-queue enabled`: Opt-in periodic queue checkpoints for crash recovery. A graceful shutdown automatically saves the active queue, exact voice channel, and current track position; startup resumes that one saved session. `/leave` discards the session snapshot; a separately configured 24/7 channel still reconnects.
 - `/settings voice-status enabled`: Toggle dynamic voice channel status updates for this server (default true).
+- `/settings auto-pause enabled`: Pause when the voice channel empties and resume when listeners return.
 - `/defaultvolume volume`: Set server starting volume.
+- `/guest-dj member minutes` and `/guest-dj-revoke member`: Grant or revoke temporary DJ controls (Manage Server required).
 - `/247`: Toggle 24/7 mode to prevent idle and alone disconnects, and reconnect to its configured voice channel even when there is no saved active session.
 
 ### Filters & Equalizer Commands

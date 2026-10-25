@@ -203,10 +203,16 @@ class VoiceEvents(commands.Cog):
         if humans is None:
             await self.bot.registry.destroy(guild_id, "voice channel missing")
         elif humans == 0:
+            if player.auto_pause and player.current is not None and not player.paused:
+                await player.pause()
+                player.auto_paused = True
             if not player.has_timer("alone"):
                 player.start_timer("alone", self.bot.cfg.alone_timeout, "alone")
         else:
             player.cancel_timer("alone")
+            if player.auto_paused and player.paused:
+                await player.resume()
+                player.auto_paused = False
 
     @commands.Cog.listener()
     @guarded

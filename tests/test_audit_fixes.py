@@ -123,6 +123,25 @@ def test_per_guild_dj_enforcement():
         require_dj(bot, cfg, regular, dj_role_id=0, dj_only=False)
 
 
+def test_temporary_dj_grant_expires():
+    import time
+
+    cfg = make_config(DJ_ROLE_ID="999", OWNER_ID="100")
+    member = SimpleNamespace(
+        id=81,
+        guild=SimpleNamespace(id=9),
+        guild_permissions=SimpleNamespace(administrator=False),
+        roles=[],
+    )
+    grants = {(9, 81): time.monotonic() + 10}
+    bot = SimpleNamespace(cfg=cfg, temporary_dj_grants=grants)
+    require_dj(bot, cfg, member, dj_role_id=555, dj_only=True)
+    grants[(9, 81)] = time.monotonic() - 1
+    with pytest.raises(DJRequired):
+        require_dj(bot, cfg, member, dj_role_id=555, dj_only=True)
+    assert (9, 81) not in grants
+
+
 def test_concurrent_queue_iteration_safety():
     async def scenario():
         queue = TrackQueue(max_size=100, max_per_user=100)
