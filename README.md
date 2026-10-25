@@ -1,9 +1,12 @@
 # Discord Music Bot (discord.py + lavalink.py)
 
 [![CI](https://github.com/Sharon-ctl/Melora.py/actions/workflows/ci.yml/badge.svg)](https://github.com/Sharon-ctl/Melora.py/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3119/)
-[![Tests](https://img.shields.io/badge/tests-238%20passed-brightgreen.svg)](https://github.com/Sharon-ctl/Melora.py)
-[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
+[![Tests](https://img.shields.io/badge/tests-238%20passing-brightgreen?style=flat-square&logo=pytest&logoColor=white)](https://github.com/Sharon-ctl/Melora.py/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![discord.py](https://img.shields.io/badge/discord.py-2.7.1-5865F2?style=flat-square&logo=discord&logoColor=white)](https://pypi.org/project/discord.py/)
+[![Lavalink](https://img.shields.io/badge/Lavalink-4.x-0A7EA4?style=flat-square&logo=musicbrainz&logoColor=white)](https://github.com/lavalink-devs/Lavalink)
+[![pytest](https://img.shields.io/badge/pytest-9.1.1-0A9EDC?style=flat-square&logo=pytest&logoColor=white)](https://pypi.org/project/pytest/)
+[![Ruff](https://img.shields.io/badge/lint-Ruff-D7FF64?style=flat-square&logo=ruff&logoColor=222222)](https://github.com/astral-sh/ruff)
 
 A slash-command-only music bot built for unattended operation. It connects to an existing Lavalink 4.x server as a client. It does not run or configure Lavalink.
 
