@@ -9,6 +9,7 @@ import random
 import re
 import time
 import asyncio
+import hashlib
 from typing import TYPE_CHECKING, Any
 
 import discord
@@ -148,6 +149,41 @@ class Features(commands.Cog):
             *(reversed(recent_titles) if recent_titles else ["No tracks played yet."]),
         ]
         view = BaseCardView(timeout=90, author_id=interaction.user.id, guild_id=guild_id, kind="session_recap")
+        view.add_item(create_card_container(TextDisplay("\n".join(lines))))
+        await reply_card(interaction, view, ephemeral=True)
+
+    @app_commands.command(name="track-note", description="Save or view your private note for the current track")
+    @app_commands.describe(note="Your private note (leave empty to view the saved note)")
+    @app_commands.guild_only()
+    async def track_note(self, interaction: discord.Interaction, note: app_commands.Range[str, 1, 240] | None = None) -> None:
+        member, _ = self._voice(interaction)
+        player = self.bot.registry.get(interaction.guild_id or 0)
+        if player is None or player.current is None:
+            raise BotUserError("Nothing is playing right now.")
+        current = player.current
+        identity = current.uri or f"{current.artist.casefold()}:{current.title.casefold()}"
+        key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        if not await safe_defer(interaction, ephemeral=True):
+            return
+        if note is not None:
+            await self.bot.storage.set_track_note(member.id, key, clean(current.title)[:200], clean(note)[:240])
+            await reply(interaction, f"Saved your private note for **{truncate(current.title)}**.", ephemeral=True)
+            return
+        text = await self.bot.storage.get_track_note(member.id, key)
+        if text:
+            await reply(interaction, f"Your note for **{truncate(current.title)}**: {text}", ephemeral=True)
+        else:
+            await reply(interaction, "You have no note saved for this track.", ephemeral=True)
+
+    @app_commands.command(name="my-track-notes", description="List your private notes for saved tracks")
+    @app_commands.guild_only()
+    async def my_track_notes(self, interaction: discord.Interaction) -> None:
+        notes = await self.bot.storage.list_track_notes(interaction.user.id, limit=25)
+        lines = ["### Your Private Track Notes", ""]
+        lines.extend(f"**{truncate(title, 60)}** - {truncate(note, 120)}" for _, title, note in notes)
+        if not notes:
+            lines.append("No track notes saved yet. Use `/track-note` while a song is playing.")
+        view = BaseCardView(timeout=90, author_id=interaction.user.id, guild_id=interaction.guild_id, kind="track_notes")
         view.add_item(create_card_container(TextDisplay("\n".join(lines))))
         await reply_card(interaction, view, ephemeral=True)
 

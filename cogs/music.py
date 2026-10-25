@@ -56,6 +56,17 @@ QUEUE_PAGE_SIZE = 10
 AUTOCOMPLETE_TIMEOUT = 2.0
 
 
+def estimate_queue_wait_ms(
+    current_duration_ms: int, current_position_ms: int, current_is_stream: bool, queued: list[QueueItem], position: int
+) -> tuple[int, bool]:
+    """Return estimated start delay and whether a live stream was omitted."""
+    preceding = queued[: position - 1]
+    omitted_stream = current_is_stream or any(item.is_stream for item in preceding)
+    remaining = 0 if current_is_stream else max(0, current_duration_ms - max(0, current_position_ms))
+    remaining += sum(max(0, item.duration_ms) for item in preceding if not item.is_stream)
+    return remaining, omitted_stream
+
+
 class SearchView(BaseCardView):
     """Components V2 search selection card with up to 5 buttons."""
 
@@ -943,6 +954,52 @@ class Music(commands.Cog):
         )
         await view.render(page)
         await reply_card(interaction, view)
+
+    @app_commands.command(name="queue-forecast", description="Estimate when a queued track will start")
+    @app_commands.describe(position="Position shown by /queue")
+    @app_commands.guild_only()
+    async def queue_forecast(self, interaction: discord.Interaction, position: app_commands.Range[int, 1, 1000]) -> None:
+        player = self.bot.registry.get(interaction.guild_id or 0)
+        if player is None:
+            raise NothingPlaying()
+        queued = list(player.queue)
+        if position > len(queued):
+            raise BotUserError("That position is not in the current queue.")
+        audio = player.audio
+        played_ms = max(0, int(getattr(audio, "position", 0) or 0)) if audio is not None else 0
+        estimate, omitted_stream = estimate_queue_wait_ms(
+            player.current.duration_ms if player.current else 0,
+            played_ms,
+            bool(player.current and player.current.is_stream),
+            queued,
+            position,
+        )
+        suffix = " (excluding live streams)" if omitted_stream else ""
+        await reply(
+            interaction,
+            f"Track **#{position}** is estimated to start in about `{format_duration(estimate)}`{suffix}.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="queue-balance", description="Show how upcoming tracks are distributed by requester")
+    @app_commands.guild_only()
+    async def queue_balance(self, interaction: discord.Interaction) -> None:
+        player = self.bot.registry.get(interaction.guild_id or 0)
+        if player is None or not player.queue:
+            await reply(interaction, "There are no upcoming tracks to balance.", ephemeral=True)
+            return
+        counts: dict[int, int] = {}
+        for item in player.queue:
+            counts[item.requester_id] = counts.get(item.requester_id, 0) + 1
+        lines = ["### Upcoming Queue Balance", ""]
+        lines.extend(
+            f"<@{user_id}> - **{count}** track{'s' if count != 1 else ''}"
+            for user_id, count in sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
+        )
+        lines.extend(["", f"**Total:** {len(player.queue)} upcoming tracks"])
+        view = BaseCardView(timeout=60, author_id=interaction.user.id, guild_id=interaction.guild_id, kind="queue_balance")
+        view.add_item(create_card_container(TextDisplay("\n".join(lines))))
+        await reply_card(interaction, view, ephemeral=True)
 
     @app_commands.command(name="remove", description="Remove track(s) from the queue")
     @app_commands.describe(position="Position shown in /queue", count="Number of tracks to remove (default 1)")

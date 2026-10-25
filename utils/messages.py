@@ -689,7 +689,7 @@ def commands_synced(count: int) -> str:
 def privacy_policy() -> str:
     return (
         "Stored data • `Titles and links of requested tracks (max 50 per user across servers), "
-        "pending server requests, favorites, playlists, "
+        "pending server requests, private track notes, favorites, playlists, "
         "playlist sharing permissions, and qualified listening totals with ranked tracks; /reset to delete your data "
         "and revoke playlists shared with you.`"
     )
@@ -702,7 +702,7 @@ def reset_prompt() -> str:
 def reset_confirmed() -> str:
     return (
         "Deleted personal data • `Favorites, playlists, recent tracks, listening stats, pending requests, "
-        "and incoming shares removed`"
+        "private track notes, and incoming shares removed`"
     )
 
 

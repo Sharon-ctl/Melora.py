@@ -147,6 +147,21 @@ def test_moderated_requests_storage(tmp_path: Path):
     run_async(scenario())
 
 
+def test_private_track_notes_storage(tmp_path: Path):
+    async def scenario():
+        storage = Storage(tmp_path / "track-notes.db")
+        storage.start()
+        await storage.set_track_note(42, "track-key", "Song", "Road trip favorite")
+        assert await storage.get_track_note(42, "track-key") == "Road trip favorite"
+        assert await storage.get_track_note(43, "track-key") is None
+        assert await storage.list_track_notes(42) == [("track-key", "Song", "Road trip favorite")]
+        await storage.reset_user_data(42)
+        assert await storage.get_track_note(42, "track-key") is None
+        await storage.close()
+
+    run_async(scenario())
+
+
 def test_user_play_history_storage(tmp_path: Path):
     async def scenario():
         db_path = tmp_path / "history_test.db"

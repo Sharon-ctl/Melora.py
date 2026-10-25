@@ -3,12 +3,21 @@ from types import SimpleNamespace
 import pytest
 
 from core.queue import QueueItem, TrackQueue
+from cogs.music import estimate_queue_wait_ms
 from utils.errors import QueueFull, UserLimitReached
 from utils.text import format_history, parse_time_string
 
 
 def make_item(user: int = 1, title: str = "t", duration: int = 1000) -> QueueItem:
     return QueueItem(track=SimpleNamespace(), title=title, duration_ms=duration, requester_id=user)
+
+
+def test_queue_forecast_accounts_for_current_position_and_live_streams():
+    queued = [make_item(duration=30_000), make_item(duration=0), make_item(duration=45_000)]
+    queued[1].is_stream = True
+    wait_ms, omitted_stream = estimate_queue_wait_ms(120_000, 20_000, False, queued, 3)
+    assert wait_ms == 130_000
+    assert omitted_stream is True
 
 
 def test_insert_positions():

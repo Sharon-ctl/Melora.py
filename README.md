@@ -335,6 +335,8 @@ All commands are slash commands only, except mentioning the bot in chat.
 
 ### Queue Commands
 - `/queue [page]`: Components V2 card with pagination buttons (< and >).
+- `/queue-forecast position`: Estimate how long until an upcoming track starts (live streams excluded from the estimate).
+- `/queue-balance`: Show the number of upcoming tracks added by each requester.
 - `/remove position [count]`: Remove track(s) at position.
 - `/clear`: Clear upcoming tracks.
 - `/shuffle`: Shuffle upcoming tracks.
@@ -367,6 +369,8 @@ All commands are slash commands only, except mentioning the bot in chat.
 - `/requests reject request_id`: Decline and remove a pending request.
 - `/dedicate [message]`: Add or clear a short dedication on the live now-playing card (requester or DJ).
 - `/session-recap`: Show a Components V2 summary of the current player's recent tracks, estimated track time, and top requesters.
+- `/track-note [note]`: Save or privately view your note for the currently playing track.
+- `/my-track-notes`: List your private track notes.
 
 ### Settings Commands (Manage Server)
 - `/settings view`: View server music settings.
@@ -394,8 +398,8 @@ All commands are slash commands only, except mentioning the bot in chat.
 - `/status`: Components V2 card with latency, uptime, Lavalink node stats, voice bitrate, and owner diagnostics.
 - `/help`: Dynamically generated command list from tree.
 - `/errors [count]`: Owner only: bounded in-memory ring buffer of recent unhandled error logs.
-- `/privacy`: Lists stored data, including pending server requests, and explains how `/reset` removes your personal entries.
-- `/reset`: Delete your personal favorites, playlists, play history, listening stats, and pending requests with secondary button confirmation.
+- `/privacy`: Lists stored data, including pending server requests and private track notes, and explains how `/reset` removes your personal entries.
+- `/reset`: Delete your personal favorites, playlists, play history, listening stats, pending requests, and private track notes with secondary button confirmation.
 
 ### Bot Mention Reply
 - When a user mentions only the bot in a text channel, the bot replies with a compact Components V2 card pointing to `/help`.

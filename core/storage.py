@@ -198,6 +198,18 @@ SCHEMA_MIGRATIONS = [
     );
     CREATE INDEX IF NOT EXISTS idx_track_requests_guild ON track_requests (guild_id, request_id);
     """,
+    # Migration 10: Private per-user track notes.
+    """
+    CREATE TABLE IF NOT EXISTS user_track_notes (
+        user_id INTEGER NOT NULL,
+        track_key TEXT NOT NULL,
+        title TEXT NOT NULL,
+        note TEXT NOT NULL,
+        updated_at REAL NOT NULL,
+        PRIMARY KEY (user_id, track_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_track_notes_updated ON user_track_notes (user_id, updated_at DESC);
+    """,
 ]
 
 
@@ -616,6 +628,36 @@ class Storage:
 
         return await self._run(_delete, is_write=True)
 
+    async def set_track_note(self, user_id: int, track_key: str, title: str, note: str) -> None:
+        def _set(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "INSERT INTO user_track_notes (user_id, track_key, title, note, updated_at) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(user_id, track_key) DO UPDATE SET "
+                "title=excluded.title, note=excluded.note, updated_at=excluded.updated_at",
+                (user_id, track_key, title, note, time.time()),
+            )
+
+        await self._run(_set, is_write=True)
+
+    async def list_track_notes(self, user_id: int, limit: int = 25) -> list[tuple[str, str, str]]:
+        def _list(conn: sqlite3.Connection) -> list[tuple[str, str, str]]:
+            return conn.execute(
+                "SELECT track_key, title, note FROM user_track_notes WHERE user_id = ? ORDER BY updated_at DESC LIMIT ?",
+                (user_id, limit),
+            ).fetchall()
+
+        return await self._run(_list)
+
+    async def get_track_note(self, user_id: int, track_key: str) -> str | None:
+        def _get(conn: sqlite3.Connection) -> str | None:
+            row = conn.execute(
+                "SELECT note FROM user_track_notes WHERE user_id = ? AND track_key = ?",
+                (user_id, track_key),
+            ).fetchone()
+            return row[0] if row else None
+
+        return await self._run(_get)
+
     async def pop_track_request(self, guild_id: int, request_id: int) -> tuple[int, StoredTrack] | None:
         def _pop(conn: sqlite3.Connection) -> tuple[int, StoredTrack] | None:
             row = conn.execute(
@@ -1024,6 +1066,7 @@ class Storage:
             cur.execute("DELETE FROM playlist_shares WHERE recipient_id = ?", (user_id,))
             cur.execute("DELETE FROM user_listening_tracks WHERE user_id = ?", (user_id,))
             cur.execute("DELETE FROM user_listening_stats WHERE user_id = ?", (user_id,))
+            cur.execute("DELETE FROM user_track_notes WHERE user_id = ?", (user_id,))
 
         try:
             await self._run(_reset, is_write=True)
@@ -1235,6 +1278,7 @@ class Storage:
                 "playlist_shares": [],
                 "queue_snapshots": [],
                 "track_requests": [],
+                "user_track_notes": [],
                 "user_play_history": [],
                 "user_listening_stats": [],
                 "user_listening_tracks": [],
@@ -1274,6 +1318,11 @@ class Storage:
             cols = [d[0] for d in cur.description]
             for row in cur.fetchall():
                 export["track_requests"].append(dict(zip(cols, row)))
+
+            cur.execute("SELECT * FROM user_track_notes")
+            cols = [d[0] for d in cur.description]
+            for row in cur.fetchall():
+                export["user_track_notes"].append(dict(zip(cols, row)))
 
             cur.execute("SELECT * FROM user_play_history")
             cols = [d[0] for d in cur.description]
