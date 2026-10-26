@@ -20,6 +20,13 @@ def test_queue_forecast_accounts_for_current_position_and_live_streams():
     assert omitted_stream is True
 
 
+def test_queue_forecast_handles_live_current_track_and_elapsed_overrun():
+    queued = [make_item(duration=45_000)]
+    wait_ms, omitted_stream = estimate_queue_wait_ms(0, 90_000, True, queued, 1)
+    assert wait_ms == 0
+    assert omitted_stream is True
+
+
 def test_insert_positions():
     q = TrackQueue(max_size=10, max_per_user=10)
     q.add(make_item(title="first"))
