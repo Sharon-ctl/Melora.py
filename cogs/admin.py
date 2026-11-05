@@ -498,6 +498,68 @@ class Admin(commands.Cog):
         view.add_item(container)
         await reply_card(interaction, view)
 
+    @app_commands.command(name="diagnose", description="Check music playback and show likely fixes")
+    @app_commands.guild_only()
+    async def diagnose(self, interaction: discord.Interaction) -> None:
+        """Give server members a focused, actionable check of this guild's player."""
+        guild = interaction.guild
+        if guild is None:
+            raise BotUserError("Use this command in a server.")
+
+        ready = self.bot.is_ready()
+        player = self.bot.registry.get(guild.id)
+        nodes = getattr(getattr(getattr(self.bot, "lavalink", None), "node_manager", None), "nodes", [])
+        audio_ready = any(getattr(node, "available", False) for node in nodes)
+        voice_ready = bool(
+            player is not None
+            and self.bot.registry.services.backend.voice_connected(guild.id, player.voice_channel_id)
+        )
+        current = getattr(player, "current", None) if player is not None else None
+        queued = len(player.queue) if player is not None else 0
+        paused = bool(getattr(player, "paused", False)) if current is not None else False
+        playback = "PAUSED" if paused else "PLAYING" if current is not None else "IDLE"
+
+        lines = [
+            "### Music Bot Diagnostics",
+            f"**Discord gateway:** `{'READY' if ready else 'NOT READY'}`",
+            f"**Audio backend:** `{'READY' if audio_ready else 'UNAVAILABLE' if nodes else 'NOT CONFIGURED'}`",
+            f"**Voice connection:** `{'CONNECTED' if voice_ready else 'NOT CONNECTED'}`",
+            f"**Playback:** `{playback}`",
+            f"**Queue:** `{queued} tracks`",
+        ]
+
+        if not ready:
+            code = "GATEWAY_OFFLINE"
+            finding = "The bot is not connected to Discord."
+            next_step = "Check the bot process and Discord connection, then retry."
+        elif not audio_ready:
+            code = "AUDIO_BACKEND_UNAVAILABLE"
+            finding = "No Lavalink node is available."
+            next_step = "Check the Lavalink service, node address, and password; retry /play when the node is online."
+        elif player is not None and not voice_ready:
+            code = "VOICE_DISCONNECTED"
+            finding = "The player exists, but Discord voice is disconnected."
+            next_step = "Run /play from your voice channel to reconnect."
+        elif current is None and queued:
+            code = "QUEUE_STALLED"
+            finding = "Tracks are queued, but none is playing."
+            next_step = "Try /play with a new track; if playback remains idle, share this report with an administrator."
+        elif paused:
+            code = "PLAYBACK_PAUSED"
+            finding = "Playback is paused."
+            next_step = "Run /resume to continue."
+        elif player is None:
+            code = "NO_ACTIVE_SESSION"
+            finding = "No music session is active in this server."
+            next_step = "Join a voice channel and run /play."
+        else:
+            code = "HEALTHY"
+            finding = "The gateway, audio backend, and player state look healthy."
+            next_step = "If you still hear silence, check your voice channel permissions and bitrate."
+
+        lines.extend([f"**Finding:** {finding}", f"**Code:** `{code}`", f"**Next step:** {next_step}"])
+        await reply(interaction, "\n".join(lines), ephemeral=True)
+
     @app_commands.command(name="help", description="Show all available commands")
     @app_commands.guild_only()
     async def help(self, interaction: discord.Interaction) -> None:

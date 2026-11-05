@@ -1,7 +1,8 @@
 # Discord Music Bot (discord.py + lavalink.py)
 
 [![CI](https://github.com/Sharon-ctl/Melora.py/actions/workflows/ci.yml/badge.svg)](https://github.com/Sharon-ctl/Melora.py/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-238%20passing-brightgreen?style=flat-square&logo=pytest&logoColor=white)](https://github.com/Sharon-ctl/Melora.py/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/badge/version-v0.0.6-blue?style=flat-square)](https://github.com/Sharon-ctl/Melora.py/tree/v0.0.6)
+[![Tests](https://img.shields.io/badge/tests-276%20passing-brightgreen?style=flat-square&logo=pytest&logoColor=white)](https://github.com/Sharon-ctl/Melora.py/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![discord.py](https://img.shields.io/badge/discord.py-2.7.1-5865F2?style=flat-square&logo=discord&logoColor=white)](https://pypi.org/project/discord.py/)
 [![Lavalink](https://img.shields.io/badge/Lavalink-4.x-0A7EA4?style=flat-square&logo=musicbrainz&logoColor=white)](https://github.com/lavalink-devs/Lavalink)
@@ -12,6 +13,7 @@ A slash-command-only music bot built for unattended operation. It connects to an
 
 - Intents: guilds, voice_states, guild_messages. No members or presence intents. Message content intent is disabled and message cache is turned off.
 - Per-guild players, a bot-owned queue, supervised background tasks, watchdog, soak test, and Components V2 interactive cards.
+- `/diagnose` checks gateway, audio, voice, playback, and queue state, then returns a stable issue code and suggested next step.
 
 ## Packages
 

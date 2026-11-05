@@ -89,6 +89,7 @@
 
     "help": "Info",
     "status": "Info",
+    "diagnose": "Info",
     "privacy": "Info",
 
     "sync": "Owner",
