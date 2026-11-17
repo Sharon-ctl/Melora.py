@@ -52,6 +52,7 @@
     "swap": "Queue",
     "dedupe": "Queue",
     "remove-mine": "Queue",
+    "remove-user": "Queue",
     "history": "Queue",
     "savequeue": "Queue",
 

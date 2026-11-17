@@ -246,8 +246,16 @@ def deduped(removed_count: int) -> str:
 def removed_mine(removed_count: int) -> str:
     if removed_count > 0:
         noun = "track" if removed_count == 1 else "tracks"
-        return f"Removed **{removed_count} of your {noun}** from the queue"
+        return f"Removed **{removed_count} {noun}** you added from the queue"
     return "Removed **0 tracks** • `You have nothing queued`"
+
+
+def removed_user(removed_count: int, user_name: str) -> str:
+    subj = escape_subject(user_name, 40) or "that user"
+    if removed_count > 0:
+        noun = "track" if removed_count == 1 else "tracks"
+        return f"Removed **{removed_count} {noun}** added by **{subj}**"
+    return f"Removed **0 tracks** • `{subj} has nothing queued`"
 
 
 def queue_saved(name: str, count: int) -> str:

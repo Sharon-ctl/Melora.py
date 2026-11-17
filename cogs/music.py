@@ -1193,6 +1193,14 @@ class Music(commands.Cog):
         removed = await player.remove_by_user(interaction.user.id)
         await reply(interaction, messages.removed_mine(len(removed)))
 
+    @app_commands.command(name="remove-user", description="DJ: remove all upcoming tracks added by a member")
+    @app_commands.describe(user="Member whose queued tracks should be removed")
+    @app_commands.guild_only()
+    async def remove_user(self, interaction: discord.Interaction, user: discord.Member) -> None:
+        player = self._control_gate(interaction, dj=True)
+        removed = await player.remove_by_user(user.id)
+        await reply(interaction, messages.removed_user(len(removed), user.display_name))
+
     @app_commands.command(name="history", description="Show recently played tracks")
     @app_commands.guild_only()
     async def history(self, interaction: discord.Interaction) -> None:
