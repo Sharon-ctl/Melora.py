@@ -122,6 +122,22 @@ def test_dedupe():
     assert q.count_for(2) == 2
 
 
+def test_remove_by_user_only_removes_that_users_tracks():
+    q = TrackQueue(max_size=10, max_per_user=10)
+    q.add(make_item(user=1, title="A"))
+    q.add(make_item(user=2, title="B"))
+    q.add(make_item(user=1, title="C"))
+    q.add(make_item(user=3, title="D"))
+
+    removed = q.remove_by_user(1)
+    assert [i.title for i in removed] == ["A", "C"]
+    assert [i.title for i in q] == ["B", "D"]
+    assert q.count_for(1) == 0
+    assert q.count_for(2) == 1
+    assert q.remove_by_user(1) == []
+    assert [i.title for i in q] == ["B", "D"]
+
+
 def test_skipto():
     q = TrackQueue(max_size=10, max_per_user=10)
     for name in ["a", "b", "c", "d"]:

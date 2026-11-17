@@ -243,6 +243,13 @@ def deduped(removed_count: int) -> str:
     return "Removed **0 duplicates** • `Queue is unique`"
 
 
+def removed_mine(removed_count: int) -> str:
+    if removed_count > 0:
+        noun = "track" if removed_count == 1 else "tracks"
+        return f"Removed **{removed_count} of your {noun}** from the queue"
+    return "Removed **0 tracks** • `You have nothing queued`"
+
+
 def queue_saved(name: str, count: int) -> str:
     subj = escape_subject(name) or "Queue"
     return f"Created playlist **{subj}** • `{count} tracks`"
