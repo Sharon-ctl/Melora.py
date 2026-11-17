@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 
 # Command category mapping
 PLAY_COMMANDS = frozenset({"play", "insert", "playnext", "playinstant", "search"})
-QUEUE_COMMANDS = frozenset({"remove", "clear", "shuffle", "move", "swap", "dedupe", "remove-mine"})
+QUEUE_COMMANDS = frozenset({"remove", "clear", "shuffle", "move", "swap", "dedupe", "remove-mine", "remove-user"})
 LIBRARY_COMMANDS = frozenset(
     {
         "savequeue",
