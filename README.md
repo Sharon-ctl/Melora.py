@@ -567,3 +567,7 @@ Run the complete verification protocol, soak test, and scale benchmark:
 .venv\Scripts\python.exe tests/run_scale.py --guilds 2000
 ```
 
+
+## License
+
+Released under the MIT License. See [LICENSE](LICENSE).
