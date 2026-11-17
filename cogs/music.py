@@ -1186,6 +1186,13 @@ class Music(commands.Cog):
         removed = await player.dedupe()
         await reply(interaction, messages.deduped(removed))
 
+    @app_commands.command(name="remove-mine", description="Remove all upcoming tracks you added to the queue")
+    @app_commands.guild_only()
+    async def remove_mine(self, interaction: discord.Interaction) -> None:
+        player = self._control_gate(interaction)
+        removed = await player.remove_by_user(interaction.user.id)
+        await reply(interaction, messages.removed_mine(len(removed)))
+
     @app_commands.command(name="history", description="Show recently played tracks")
     @app_commands.guild_only()
     async def history(self, interaction: discord.Interaction) -> None:

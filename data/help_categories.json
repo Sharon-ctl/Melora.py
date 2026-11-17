@@ -51,6 +51,7 @@
     "move": "Queue",
     "swap": "Queue",
     "dedupe": "Queue",
+    "remove-mine": "Queue",
     "history": "Queue",
     "savequeue": "Queue",
 

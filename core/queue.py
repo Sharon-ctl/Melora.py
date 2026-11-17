@@ -427,6 +427,20 @@ class TrackQueue:
         self._items = unique_items
         return removed_count
 
+    def remove_by_user(self, user_id: int) -> list[QueueItem]:
+        """Remove every upcoming track requested by ``user_id``. Returns the removed items in queue order."""
+        removed: list[QueueItem] = []
+        kept: deque[QueueItem] = deque()
+        for item in self._items:
+            if item.requester_id == user_id:
+                self._release(item)
+                removed.append(item)
+            else:
+                kept.append(item)
+        if removed:
+            self._items = kept
+        return removed
+
     # ------------------------------------------------------------- history
     def record_history(self, item: QueueItem) -> None:
         """Record a played track in bounded history."""

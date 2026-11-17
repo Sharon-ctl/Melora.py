@@ -347,6 +347,7 @@ All commands are slash commands only, except mentioning the bot in chat.
 - `/move from to`: Move track position.
 - `/swap pos1 pos2`: Swap two track positions.
 - `/dedupe`: Remove duplicate tracks in queue.
+- `/remove-mine`: Remove all upcoming tracks you added, without touching anyone else's.
 - `/history`: View last 20 played tracks.
 - `/savequeue name`: Save current queue as a custom playlist.
 

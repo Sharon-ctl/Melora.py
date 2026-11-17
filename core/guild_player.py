@@ -1198,6 +1198,13 @@ class GuildPlayer:
                 self.schedule_snapshot()
             return count
 
+    async def remove_by_user(self, user_id: int) -> list[QueueItem]:
+        async with self.lock:
+            items = self.queue.remove_by_user(user_id)
+            if items:
+                self.schedule_snapshot()
+            return items
+
     async def remove_many(self, position: int, count: int = 1) -> list[QueueItem]:
         async with self.lock:
             try:
