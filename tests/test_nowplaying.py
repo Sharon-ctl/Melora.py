@@ -1,4 +1,4 @@
-"""Tests for Phase 5: Now Playing Card lifecycle."""
+"""Tests for the Now Playing card lifecycle."""
 from __future__ import annotations
 
 import asyncio
@@ -8,7 +8,6 @@ from core.contracts import PlayerServices
 from core.guild_player import GuildPlayer
 from core.queue import LoopMode, QueueItem
 from tests.fakes import FakeBackend, FakeLoader, make_config, make_track
-
 
 GUILD = 1
 VOICE = 100
@@ -291,11 +290,12 @@ def test_replace_track_updates_artwork():
     assert item.artwork_url == "https://example.com/new.jpg"
 
 
-# ---------------------------------------------------------------- Phase 5 card builder tests
+# ---------------------------------------------------------------- card builder tests
 
 
 def test_card_builder_header_uses_playing_state():
     from unittest.mock import patch
+
     from utils.components_v2 import Section, TextDisplay, build_nowplaying_container
 
     # 1. Playing state with emoji
@@ -336,7 +336,7 @@ def test_card_builder_header_uses_playing_state():
 
 
 def test_card_builder_thumbnail_is_artwork():
-    from utils.components_v2 import build_nowplaying_container, Section, Thumbnail
+    from utils.components_v2 import Section, Thumbnail, build_nowplaying_container
 
     art = "https://example.com/artwork.jpg"
     container = build_nowplaying_container(
@@ -353,7 +353,7 @@ def test_card_builder_thumbnail_is_artwork():
 
 
 def test_card_builder_no_user_avatar():
-    from utils.components_v2 import build_nowplaying_container, Section
+    from utils.components_v2 import Section, build_nowplaying_container
 
     avatar = "https://cdn.discordapp.com/avatars/42/requester.png"
     art = "https://example.com/artwork.jpg"
@@ -373,7 +373,7 @@ def test_card_builder_no_user_avatar():
 
 
 def test_card_builder_link_escaped_and_clickable():
-    from utils.components_v2 import build_nowplaying_container, Section, TextDisplay
+    from utils.components_v2 import Section, TextDisplay, build_nowplaying_container
 
     title = "Song [Remix] *cool* & _great_ (Official Video)"
     uri = "https://youtube.com/watch?v=abc123xyz"
@@ -397,7 +397,7 @@ def test_card_builder_link_escaped_and_clickable():
 
 
 def test_card_builder_mention_and_duration_format():
-    from utils.components_v2 import build_nowplaying_container, Section, TextDisplay
+    from utils.components_v2 import Section, TextDisplay, build_nowplaying_container
 
     container = build_nowplaying_container(
         bot_name="Melora",
@@ -427,6 +427,7 @@ def test_card_builder_dedication_escapes_mentions_and_markdown():
 
 def test_card_builder_button_order_and_styles():
     import discord
+
     from utils.components_v2 import ActionRow, Button, build_nowplaying_action_row
 
     row = build_nowplaying_action_row(is_paused=False, has_history=True)

@@ -238,6 +238,7 @@ def test_reply_card_sets_message_for_paginated_view():
 
 def test_bot_activity_configured():
     import discord
+
     from core.alerts import Alerter
     from main import MusicBot
 
@@ -251,6 +252,7 @@ def test_bot_activity_configured():
 def test_bot_channel_permissions_checks():
     import discord
     from discord import app_commands
+
     from utils.checks import check_bot_channel_permissions
 
     def make_interaction(voice_perms_dict=None, text_perms_dict=None):
@@ -378,6 +380,7 @@ def test_rate_limit_error_handling():
     async def scenario():
         import discord
         from discord import app_commands
+
         from utils.errors import handle_app_command_error
 
         interaction = MagicMock(spec=discord.Interaction)
@@ -398,8 +401,8 @@ def test_rate_limit_error_handling():
     asyncio.run(scenario())
 
 
-def test_verify_phase8_non_ascii_rules(tmp_path):
-    from scripts.verify_phase8 import scan_non_ascii
+def test_verify_repo_non_ascii_rules(tmp_path):
+    from scripts.verify_repo import scan_non_ascii
 
     # 1. autocomplete.py containing chr(0x1F50E) and chr(0x1F55B) is accepted
     auto_file = tmp_path / "autocomplete.py"
@@ -436,6 +439,7 @@ def test_reply_multiline_uses_container():
     async def scenario():
         import discord
         from discord.ui import Container
+
         from utils.components_v2 import BaseCardView
         from utils.interaction import reply
 
@@ -473,6 +477,7 @@ def test_settings_view_uses_container():
     async def scenario():
         import discord
         from discord.ui import Container
+
         from cogs.settings import Settings
         from core.alerts import Alerter
         from main import MusicBot
@@ -520,6 +525,7 @@ def test_settings_view_uses_container():
 def test_status_loop_rotation():
     async def scenario():
         import discord
+
         from core.alerts import Alerter
         from main import MusicBot
 
@@ -573,6 +579,7 @@ def test_in_memory_commands_acceleration_no_defer():
     """Verify in-memory playback and settings commands do not call defer, responding in 1 roundtrip."""
     async def scenario():
         import discord
+
         from cogs.music import Music
         from cogs.settings import Settings
         from core.alerts import Alerter
@@ -648,6 +655,7 @@ def test_graceful_shutdown_sets_offline_and_saves_queues():
     async def scenario():
         import discord
         from discord.ext import commands
+
         from core.alerts import Alerter
         from main import MusicBot
 
@@ -688,6 +696,7 @@ def test_graceful_shutdown_sets_offline_and_saves_queues():
 def test_graceful_shutdown_cancellation_resilient():
     async def scenario():
         from discord.ext import commands
+
         from core.alerts import Alerter
         from main import MusicBot
 
@@ -821,6 +830,7 @@ def test_wrong_channel_preserves_channel_id_and_mentions_vc():
 def test_calling_command_fails_fast_without_deferral_on_wrong_vc():
     async def scenario():
         import discord
+
         from cogs.music import Music
         from utils.errors import WrongChannel
 
@@ -881,6 +891,7 @@ def test_calling_command_fails_fast_without_deferral_on_wrong_vc():
 def test_reply_edits_original_response_when_already_deferred():
     async def scenario():
         import discord
+
         from utils.interaction import reply
 
         interaction = MagicMock(spec=discord.Interaction)

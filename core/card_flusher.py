@@ -71,7 +71,7 @@ class CardFlusher:
                     batch[guild_id] = self._pending.pop(guild_id)
                 semaphore = asyncio.Semaphore(self._max_concurrency)
 
-                async def update(guild_id: int, player: Any) -> None:
+                async def update(guild_id: int, player: Any, semaphore: asyncio.Semaphore = semaphore) -> None:
                     if getattr(player, "destroyed", False):
                         return
                     async with semaphore:

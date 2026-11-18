@@ -1,7 +1,8 @@
-"""Unit tests for Phase 4: Library, Settings, 24/7, and Queue Restore."""
+"""Unit tests for Library, Settings, 24/7, and Queue Restore."""
 from __future__ import annotations
 
 from pathlib import Path
+
 import pytest
 
 from core.contracts import PlayerServices
@@ -263,8 +264,8 @@ async def test_privacy_and_reset(storage: Storage):
 @pytest.mark.anyio
 async def test_spotify_resolved_history_recording(services: PlayerServices):
     import asyncio
-    from core.queue import QueueItem
 
+    from core.queue import QueueItem
     from core.registry import PlayerRegistry
 
     registry = PlayerRegistry(services)

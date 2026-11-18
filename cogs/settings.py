@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import discord
 from discord import app_commands
@@ -84,7 +84,7 @@ class Settings(commands.Cog):
             messages.server_setting_row("Voice Channel Status", "Enabled" if s.voice_status_enabled else "Disabled"),
             messages.server_setting_row("Auto Pause When Empty", "Enabled" if s.auto_pause else "Disabled"),
         ]
-        text_disp = TextDisplay("\n".join(lines))
+        text_disp: TextDisplay[Any] = TextDisplay("\n".join(lines))
         container = create_card_container(text_disp)
         view = BaseCardView(timeout=60.0, author_id=interaction.user.id)
         view.add_item(container)

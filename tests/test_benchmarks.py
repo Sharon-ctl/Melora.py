@@ -1,4 +1,4 @@
-"""Phase 2 Performance and Memory Benchmarks.
+"""Performance and memory benchmarks.
 
 Verifies:
 - Page slice under 5 ms at 200,000 tracks
@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 from cogs.music import Music
 from core.contracts import PlayerServices
-from core.queue import QueueItem, TrackQueue, _AVATAR_CACHE, clear_avatar_cache
+from core.queue import _AVATAR_CACHE, QueueItem, TrackQueue, clear_avatar_cache
 from core.registry import PlayerRegistry
 from core.storage import Storage, StoredTrack
 from tests.fakes import FakeBackend, FakeLoader, make_config

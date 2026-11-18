@@ -1,4 +1,4 @@
-"""Unit tests for Phase 3: Event Loop Scale.
+"""Unit tests for the scheduler, card flusher and load shedding (event loop scale).
 
 Verifies:
 - CentralScheduler min-heap deadline ordering, cancellation per timer/guild, single destroy cleanup

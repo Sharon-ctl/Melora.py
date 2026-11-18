@@ -1,4 +1,4 @@
-"""Unit tests for Phase 5: Filters, EQ presets, vote skip, sleep timer, and autoplay."""
+"""Unit tests for Filters, EQ presets, vote skip, sleep timer, and autoplay."""
 from __future__ import annotations
 
 import pytest
@@ -30,7 +30,7 @@ def test_eq_presets_validation():
     assert "bassboost" in eq_presets
     assert "rock" in eq_presets
 
-    for name, bands in eq_presets.items():
+    for bands in eq_presets.values():
         eq = validate_and_build_eq(bands)
         assert eq is not None
 
@@ -250,8 +250,10 @@ async def test_autoplay_populates_batch_into_queue(services: PlayerServices):
 
 def test_lavalink_service_to_outcome_search_preserves_tracks():
     from unittest.mock import MagicMock
-    from core.lavalink_service import LavalinkService
+
     from lavalink.server import LoadResult, LoadType
+
+    from core.lavalink_service import LavalinkService
 
     svc = LavalinkService(MagicMock(), make_config())
     t1 = make_track(1, title="T1")

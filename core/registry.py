@@ -318,8 +318,8 @@ class PlayerRegistry:
             strays = []
 
         for i in range(0, len(strays), chunk_size):
-            chunk = strays[i : i + chunk_size]
-            for guild_id in chunk:
+            stray_chunk = strays[i : i + chunk_size]
+            for guild_id in stray_chunk:
                 if self._lock(guild_id).locked():
                     continue
                 try:

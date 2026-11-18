@@ -2,8 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from cogs.queue_cmds import estimate_queue_wait_ms
 from core.queue import QueueItem, TrackQueue
-from cogs.music import estimate_queue_wait_ms
 from utils.errors import QueueFull, UserLimitReached
 from utils.text import format_history, parse_time_string
 

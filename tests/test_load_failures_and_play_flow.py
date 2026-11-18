@@ -1,4 +1,4 @@
-"""Regression tests for Phase 1 defect fixes.
+"""Regression tests for load failures, timeouts and the /play flow.
 
 Tests:
 1. Prevention of 'Event loop error: Future exception was never retrieved'
@@ -192,9 +192,8 @@ def test_load_failure_preserves_cause_and_plain_text_logging(caplog):
         client.get_tracks_coro = _error_tracks
         service = LavalinkService(client, cfg)  # type: ignore[arg-type]
 
-        with caplog.at_level(logging.INFO):
-            with pytest.raises(LoadFailed) as exc_info:
-                await service.load(123, "ytmsearch:restricted song")
+        with caplog.at_level(logging.INFO), pytest.raises(LoadFailed) as exc_info:
+            await service.load(123, "ytmsearch:restricted song")
 
         err = exc_info.value
         assert err.cause == "Sign in to confirm your age"
@@ -253,6 +252,7 @@ def test_play_command_defers_first_and_gathers_concurrently():
     """Verify /play defers immediately and runs load and connect concurrently."""
     async def scenario():
         import discord
+
         from cogs.music import Music
 
         bot = MagicMock()

@@ -1,10 +1,10 @@
-"""Automated scan script for Phase 8 final review."""
+"""Automated repository audit: non-ASCII, TODO and empty-except scans."""
 from __future__ import annotations
 
 import ast
-from pathlib import Path
 import re
 import sys
+from pathlib import Path
 
 WORKSPACE = Path(__file__).resolve().parent.parent
 
@@ -17,7 +17,7 @@ def get_files_to_check() -> list[Path]:
         if p.is_file():
             if any(part in EXCLUDE_DIRS for part in p.parts):
                 continue
-            if p.suffix in (".py", ".md", ".json", ".bat") and p.name != "verify_phase8.py":
+            if p.suffix in (".py", ".md", ".json", ".bat") and p.name != "verify_repo.py":
                 files.append(p)
     return files
 
@@ -25,7 +25,7 @@ def get_files_to_check() -> list[Path]:
 def scan_non_ascii(files: list[Path]) -> list[str]:
     hits: list[str] = []
     for file in files:
-        # golden_spotify_matches.json tests unicode matching per Phase 3 prompt
+        # golden_spotify_matches.json tests unicode matching intentionally
         if file.name == "golden_spotify_matches.json":
             continue
         try:
@@ -181,7 +181,7 @@ def main() -> int:
             print(f"PASSED: {category}")
 
     if total_failures == 0:
-        print("\nALL PHASE 8 AUDIT SCANS PASSED PERFECTLY!")
+        print("\nALL AUDIT SCANS PASSED!")
         return 0
     else:
         print(f"\nTOTAL FAILURES: {total_failures}")

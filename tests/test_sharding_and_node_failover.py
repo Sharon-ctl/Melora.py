@@ -1,4 +1,4 @@
-"""Unit tests for Phase 4: Sharding and Multi-Node.
+"""Unit tests for sharding, multi-node config and node failover.
 
 Verifies:
 - Config accepts list of Lavalink nodes via LAVALINK_NODES (name, host, port, password, region, secure)
@@ -91,7 +91,7 @@ def test_single_node_fallback_and_duplicate_rejection():
     }
     try:
         load_config(dup_env)
-        assert False, "Should have raised ConfigError for duplicate node names"
+        raise AssertionError("Should have raised ConfigError for duplicate node names")
     except ConfigError as exc:
         assert "unique" in str(exc).lower()
 
@@ -183,6 +183,7 @@ def test_startup_restore_requires_247_and_keeps_snapshot_on_restore_failure(monk
 
     async def scenario():
         import discord
+
         from core.storage import StoredTrack
         from main import MusicBot
 

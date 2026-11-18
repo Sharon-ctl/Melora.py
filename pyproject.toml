@@ -4,4 +4,20 @@ target-version = "py311"
 extend-exclude = [".venv"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W"]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "ASYNC"]
+ignore = [
+    "B905",     # zip(strict=) would change behaviour; zipped sequences are built to equal length
+    "ASYNC109", # `timeout` parameters are an intentional part of these async APIs
+    "SIM108",   # explicit if/else reads better than ternaries for long f-string labels
+    "UP042",    # LoopMode(str, Enum) -> StrEnum would change str() output used in messages
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B010", "B017", "ASYNC230"]
+
+
+[tool.mypy]
+ignore_missing_imports = true
+check_untyped_defs = false
+# discord.py items are customised by assigning `.callback` on the instance.
+disable_error_code = ["method-assign"]

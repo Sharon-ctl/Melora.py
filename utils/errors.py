@@ -65,6 +65,11 @@ class BotUserError(app_commands.AppCommandError):
 
     default_message = "**Something went wrong**\nAn unexpected error occurred."
 
+    # Optional diagnostics, filled in by track-load errors (LoadFailed / NoMatches).
+    cause: str | None = None
+    severity: str | None = None
+    source: str | None = None
+
     def __init__(self, message: str | None = None) -> None:
         self.message = message or self.default_message
         super().__init__(self.message)
@@ -319,7 +324,8 @@ async def handle_app_command_error(interaction: discord.Interaction, error: app_
         start_time = extras.get("_start_time")
         if isinstance(start_time, (int, float)):
             duration = time.monotonic() - start_time
-            cmd_name = interaction.command.qualified_name if getattr(interaction, "command", None) else "unknown"
+            command = getattr(interaction, "command", None)
+            cmd_name = command.qualified_name if command is not None else "unknown"
             from utils.timing import record_handler_time
 
             record_handler_time(cmd_name, duration)

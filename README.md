@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/Sharon-ctl/Melora.py/actions/workflows/ci.yml/badge.svg)](https://github.com/Sharon-ctl/Melora.py/actions/workflows/ci.yml)
 [![Version](https://img.shields.io/badge/version-v0.0.6-blue?style=flat-square)](https://github.com/Sharon-ctl/Melora.py/tree/v0.0.6)
-[![Tests](https://img.shields.io/badge/tests-276%20passing-brightgreen?style=flat-square&logo=pytest&logoColor=white)](https://github.com/Sharon-ctl/Melora.py/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-287%20passing-brightgreen?style=flat-square&logo=pytest&logoColor=white)](https://github.com/Sharon-ctl/Melora.py/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![discord.py](https://img.shields.io/badge/discord.py-2.7.1-5865F2?style=flat-square&logo=discord&logoColor=white)](https://pypi.org/project/discord.py/)
 [![Lavalink](https://img.shields.io/badge/Lavalink-4.x-0A7EA4?style=flat-square&logo=musicbrainz&logoColor=white)](https://github.com/lavalink-devs/Lavalink)
-[![pytest](https://img.shields.io/badge/pytest-9.1.1-0A9EDC?style=flat-square&logo=pytest&logoColor=white)](https://pypi.org/project/pytest/)
+[![pytest](https://img.shields.io/badge/pytest-9.2.0-0A9EDC?style=flat-square&logo=pytest&logoColor=white)](https://pypi.org/project/pytest/)
 [![Ruff](https://img.shields.io/badge/lint-Ruff-D7FF64?style=flat-square&logo=ruff&logoColor=222222)](https://github.com/astral-sh/ruff)
 
 A slash-command-only music bot built for unattended operation. It connects to an existing Lavalink 4.x server as a client. It does not run or configure Lavalink.
@@ -32,7 +32,7 @@ Runtime dependencies are pinned in [`requirements.txt`](requirements.txt). The d
 | [aiodns](https://pypi.org/project/aiodns/) + [pycares](https://pypi.org/project/pycares/) | 4.0.4 + 5.2.1 | Asynchronous DNS resolution |
 | [Brotli](https://pypi.org/project/Brotli/) | 1.2.1 | Compressed HTTP responses |
 
-Development tools: pytest 9.1.1 and Ruff 0.17.1. Dependabot checks Python and GitHub Actions dependencies weekly.
+Development tools: pytest 9.2.0, Ruff 0.17.3 and mypy 2.3.1. Dependabot checks Python and GitHub Actions dependencies weekly.
 
 ## Prerequisites
 
@@ -553,14 +553,17 @@ Run the complete verification protocol, soak test, and scale benchmark:
 # 1. Compilation & Type Integrity
 .venv\Scripts\python.exe -m compileall -q .
 
-# 2. Complete Test Suite (238 tests)
+# 2. Complete Test Suite (287 tests)
 .venv\Scripts\python.exe -m pytest
 
 # 3. Linter & Style Consistency
 .venv\Scripts\ruff.exe check .
 
-# 4. Phase 8 Invariants & Style Audit
-.venv\Scripts\python.exe scripts/verify_phase8.py
+# 3b. Static type checking
+.venv\Scripts\mypy.exe cogs core utils main.py config.py logging_setup.py
+
+# 4. Repository invariants & style audit
+.venv\Scripts\python.exe scripts/verify_repo.py
 
 # 5. Soak Test (configured 10,000-track queue ceiling, returns to baseline)
 .venv\Scripts\python.exe -m tests.run_soak --cycles 500 --guilds 25

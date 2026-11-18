@@ -23,7 +23,7 @@ class DataValidationError(Exception):
 def load_eq_presets(path: Path | None = None) -> dict[str, list[dict[str, float]]]:
     file_path = path or (DATA_DIR / "eq_presets.json")
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             data = json.load(f)
     except Exception as exc:
         log.error("Failed to read eq_presets.json: %s", exc)
@@ -55,7 +55,7 @@ def load_eq_presets(path: Path | None = None) -> dict[str, list[dict[str, float]
 def load_filter_presets(path: Path | None = None) -> dict[str, dict[str, Any]]:
     file_path = path or (DATA_DIR / "filter_presets.json")
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             data = json.load(f)
     except Exception as exc:
         log.error("Failed to read filter_presets.json: %s", exc)
@@ -76,7 +76,7 @@ def load_filter_presets(path: Path | None = None) -> dict[str, dict[str, Any]]:
 def load_matching_rules(path: Path | None = None) -> dict[str, Any]:
     file_path = path or (DATA_DIR / "matching_rules.json")
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             data = json.load(f)
     except Exception as exc:
         log.error("Failed to read matching_rules.json: %s", exc)
@@ -96,7 +96,7 @@ def load_matching_rules(path: Path | None = None) -> dict[str, Any]:
 def load_help_categories(path: Path | None = None) -> dict[str, Any]:
     file_path = path or (DATA_DIR / "help_categories.json")
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             data = json.load(f)
     except Exception as exc:
         log.error("Failed to read help_categories.json: %s", exc)
@@ -111,7 +111,7 @@ def load_help_categories(path: Path | None = None) -> dict[str, Any]:
 def load_rate_limits(path: Path | None = None) -> dict[str, Any]:
     file_path = path or (DATA_DIR / "rate_limits.json")
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             data = json.load(f)
     except Exception as exc:
         log.error("Failed to read rate_limits.json: %s", exc)
@@ -173,7 +173,7 @@ def load_emojis(path: Path | None = None, force_reload: bool = False) -> dict[st
     raw_data: dict[str, Any] = {}
     if file_path.exists():
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file_path, encoding="utf-8") as f:
                 loaded = json.load(f)
                 if isinstance(loaded, dict):
                     raw_data = loaded

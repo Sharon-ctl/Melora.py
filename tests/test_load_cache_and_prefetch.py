@@ -1,4 +1,4 @@
-"""Unit tests for Phase 6: Perceived Speed.
+"""Unit tests for load caching, single-flight and prefetch (perceived speed).
 
 Verifies:
 - Load-result cache (bounded LRU with TTL for search and load results)

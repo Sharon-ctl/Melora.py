@@ -35,12 +35,12 @@ def _make_inter(user_id: int = 111) -> MagicMock:
 
 
 def _make_cog():
-    from cogs.music import Music
+    from cogs.queue_cmds import QueueCommands
     from core.alerts import Alerter
     from main import MusicBot
 
     cfg = make_config()
-    return Music(MusicBot(cfg, Alerter(cfg)))
+    return QueueCommands(MusicBot(cfg, Alerter(cfg)))
 
 
 def test_remove_mine_command_only_removes_callers_tracks():
@@ -53,7 +53,7 @@ def test_remove_mine_command_only_removes_callers_tracks():
         player.remove_by_user = AsyncMock(side_effect=lambda uid: queue.remove_by_user(uid))
         with (
             patch.object(cog, "_control_gate", return_value=player) as gate,
-            patch("cogs.music.reply", new_callable=AsyncMock) as mock_reply,
+            patch("cogs.queue_cmds.reply", new_callable=AsyncMock) as mock_reply,
         ):
             await cog.remove_mine.callback(cog, _make_inter(111))
         gate.assert_called_once()
@@ -78,7 +78,7 @@ def test_remove_user_command_is_dj_gated_and_targets_member():
         target.display_name = "Sam"
         with (
             patch.object(cog, "_control_gate", return_value=player) as gate,
-            patch("cogs.music.reply", new_callable=AsyncMock) as mock_reply,
+            patch("cogs.queue_cmds.reply", new_callable=AsyncMock) as mock_reply,
         ):
             await cog.remove_user.callback(cog, _make_inter(111), target)
         assert gate.call_args.kwargs.get("dj") is True

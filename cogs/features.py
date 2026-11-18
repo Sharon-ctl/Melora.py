@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import io
 import json
 import logging
 import random
 import re
 import time
-import asyncio
-import hashlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import discord
@@ -20,14 +20,15 @@ from discord.ext import commands
 from core.queue import QueueItem, extract_user_avatar_url
 from core.spotify import parse_spotify_url
 from core.storage import StorageError, StoredTrack
-from utils.profile_canvas import render_profile, render_stats
 from utils.checks import check_bot_channel_permissions, guild_member, require_dj, user_voice_channel
 from utils.components_v2 import BaseCardView, PaginatedPage, PaginatedView, TextDisplay, create_card_container, reply_card
 from utils.errors import BotUserError, StageUnsupported, WrongChannel
 from utils.interaction import reply, safe_defer
+from utils.profile_canvas import render_profile, render_stats
 from utils.text import clean, format_duration, format_uptime, truncate
 
 if TYPE_CHECKING:
+    from core.guild_player import GuildPlayer
     from main import MusicBot
 
 log = logging.getLogger(__name__)
@@ -252,7 +253,7 @@ class Features(commands.Cog):
         if match is None:
             await reply(interaction, "No matching track was found in your recent listening history.", ephemeral=True)
             return
-        timestamp = datetime.fromtimestamp(match.played_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        timestamp = datetime.fromtimestamp(match.played_at, tz=UTC).strftime("%Y-%m-%d %H:%M UTC")
         safe_title = discord.utils.escape_markdown(truncate(match.title))
         safe_artist = discord.utils.escape_markdown(truncate(match.artist))
         artist = f" by **{safe_artist}**" if match.artist else ""
@@ -286,7 +287,7 @@ class Features(commands.Cog):
         )
         if not shared:
             lines.append("No shared top artists yet. Keep listening and check again later.")
-        view = BaseCardView(timeout=90, author_id=interaction.user.id, guild_id=interaction.guild_id, kind="taste_compare")
+        view = BaseCardView(timeout=90, author_id=interaction.user.id, guild_id=interaction.guild_id or 0, kind="taste_compare")
         view.add_item(create_card_container(TextDisplay("\n".join(lines))))
         await reply_card(interaction, view, ephemeral=True)
 
@@ -366,7 +367,7 @@ class Features(commands.Cog):
         history = await self.bot.storage.get_user_play_history(target.id, limit=5)
         try:
             avatar = await asyncio.wait_for(target.display_avatar.with_size(128).read(), timeout=1.0)
-        except (discord.HTTPException, OSError, asyncio.TimeoutError):
+        except (TimeoutError, discord.HTTPException, OSError):
             avatar = None
         png = await asyncio.to_thread(
             render_profile,
@@ -391,7 +392,7 @@ class Features(commands.Cog):
         stats = await self.bot.storage.get_user_listening_stats(target.id)
         try:
             avatar = await asyncio.wait_for(target.display_avatar.with_size(128).read(), timeout=1.0)
-        except (discord.HTTPException, OSError, asyncio.TimeoutError):
+        except (TimeoutError, discord.HTTPException, OSError):
             avatar = None
         png = await asyncio.to_thread(
             render_stats,
@@ -539,7 +540,7 @@ class Features(commands.Cog):
             return
         current = getattr(player, "current", None)
         encoded = getattr(getattr(current, "track", None), "track", None)
-        if not encoded:
+        if current is None or not encoded:
             await interaction.followup.send("There is no playable track.", ephemeral=True)
             return
         node_manager = getattr(self.bot.lavalink, "node_manager", None)
@@ -560,17 +561,17 @@ class Features(commands.Cog):
                 f"**Live Karaoke - {truncate(current.title)}**\n{discord.utils.escape_mentions(timed[0][1])}",
                 allowed_mentions=discord.AllowedMentions.none(),
             )
-            task = self.bot.supervisor.spawn(
+            karaoke_task = self.bot.supervisor.spawn(
                 self._run_karaoke(guild_id, player, current, message, timed), name=f"karaoke-{guild_id}"
             )
-            if task is None:
+            if karaoke_task is None:
                 try:
                     await message.delete()
                 except discord.HTTPException as exc:
                     log.debug("guild=%s karaoke message cleanup failed: %s", guild_id, type(exc).__name__)
                 await interaction.followup.send("Karaoke is unavailable right now.", ephemeral=True)
                 return
-            self._karaoke[guild_id] = (message, task)
+            self._karaoke[guild_id] = (message, karaoke_task)
             await interaction.followup.send("Live karaoke enabled.", ephemeral=True)
         except Exception as exc:
             log.warning("guild=%s karaoke failed: %s", guild_id, type(exc).__name__)
@@ -594,13 +595,15 @@ class Features(commands.Cog):
         return timed
 
     async def _run_karaoke(
-        self, guild_id: int, player: Any, current: Any, message: discord.Message, lines: list[tuple[int, str]]
+        self, guild_id: int, player: GuildPlayer, current: Any, message: discord.Message, lines: list[tuple[int, str]]
     ) -> None:
         index = -1
         shown_item = current
         waiting_shown = False
         try:
-            while self.bot.registry.get(guild_id) is player and not player.destroyed:
+            while True:
+                if self.bot.registry.get(guild_id) is not player or player.destroyed:
+                    break
                 current = player.current
                 if current is None:
                     if not waiting_shown:
@@ -636,8 +639,8 @@ class Features(commands.Cog):
         except discord.HTTPException as exc:
             log.debug("guild=%s karaoke message update failed: %s", guild_id, type(exc).__name__)
         finally:
-            active = self._karaoke.get(guild_id)
-            if active is not None and active[0] is message:
+            entry = self._karaoke.get(guild_id)
+            if entry is not None and entry[0] is message:
                 self._karaoke.pop(guild_id, None)
             try:
                 await message.delete()

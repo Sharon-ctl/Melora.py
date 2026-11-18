@@ -1,4 +1,4 @@
-"""Tests for Phase 1: 0 = unlimited semantics, rate limiter disable/re-enable, and button guards."""
+"""Tests for 0 = unlimited semantics, rate limiter disable/re-enable, and button guards."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -9,7 +9,7 @@ import pytest
 from core.queue import QueueItem, TrackQueue, validate_track
 from core.storage import Storage, StoredTrack
 from utils import messages
-from utils.components_v2 import BaseCardView, _IN_FLIGHT_MESSAGES
+from utils.components_v2 import _IN_FLIGHT_MESSAGES, BaseCardView
 from utils.errors import TrackTooLong
 from utils.ratelimit import RateLimiter
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+
 import discord
 
 from core.data_loader import DEFAULT_EMOJI_LABELS, get_emoji_markup, load_emojis

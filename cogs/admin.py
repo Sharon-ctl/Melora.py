@@ -6,7 +6,7 @@ import asyncio
 import logging
 import math
 import time
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import discord
 from discord import app_commands
@@ -15,6 +15,7 @@ from discord.ui import Select
 
 from core.data_loader import load_help_categories
 from core.stats import collect_stats, rss_mb
+from utils import messages
 from utils.checks import owner_only
 from utils.components_v2 import (
     ActionRow,
@@ -27,8 +28,7 @@ from utils.components_v2 import (
     reply_card,
     secondary_button,
 )
-from utils import messages
-from utils.errors import BotUserError, ERROR_BUFFER
+from utils.errors import ERROR_BUFFER, BotUserError
 from utils.interaction import reply, safe_defer
 from utils.text import format_uptime
 
@@ -48,7 +48,7 @@ class ResetConfirmView(BaseCardView):
         self.cog = cog
         self.confirmed = False
 
-        text_disp = TextDisplay(messages.reset_prompt())
+        text_disp: TextDisplay[Any] = TextDisplay(messages.reset_prompt())
 
         btn_confirm = secondary_button("Confirm Delete")
         btn_confirm.callback = self._on_confirm
@@ -197,7 +197,7 @@ class HelpView(BaseCardView):
         self.current_page = max(1, min(self.current_page, self.total_pages))
         page_text = cat_pages[self.current_page - 1]
 
-        text_disp = TextDisplay(page_text)
+        text_disp: TextDisplay[Any] = TextDisplay(page_text)
 
         options = [
             discord.SelectOption(
@@ -305,7 +305,7 @@ class Admin(commands.Cog):
                         by_cat[cat] = []
                     by_cat[cat].append(f"**/{full_name}** • {desc}")
             else:
-                desc = cmd.description or "No description."
+                desc = getattr(cmd, "description", "") or "No description."
                 cat = mapping.get(cmd.name, "Other")
                 if cat not in by_cat:
                     by_cat[cat] = []
@@ -332,7 +332,7 @@ class Admin(commands.Cog):
             self._sync_task = task
         try:
             global_synced = await asyncio.wait_for(asyncio.shield(task), timeout=SYNC_TIMEOUT)
-        except (discord.HTTPException, asyncio.TimeoutError, app_commands.CommandSyncFailure):
+        except (TimeoutError, discord.HTTPException, app_commands.CommandSyncFailure):
             log.exception("Command sync failed")
             raise BotUserError(messages.sync_failed()) from None
         finally:
@@ -444,8 +444,8 @@ class Admin(commands.Cog):
         if is_owner:
             lines.append("")
             lines.append("### Diagnostics (Owner)")
-            mem = rss_mb()
-            lines.append(f"**Process Memory:** `{mem:.1f} MB`")
+            mem_mb = rss_mb()
+            lines.append(f"**Process Memory:** `{mem_mb:.1f} MB`")
             try:
                 task_count = len(asyncio.all_tasks())
             except RuntimeError as exc:
@@ -466,8 +466,8 @@ class Admin(commands.Cog):
 
             cache_parts: list[str] = []
             music_cog = self.bot.get_cog("Music")
-            if music_cog is not None and hasattr(music_cog, "_suggest_cache"):
-                cache_parts.append(f"autocomplete={len(music_cog._suggest_cache)}")
+            if music_cog is not None and hasattr(music_cog, "_search_cache"):
+                cache_parts.append(f"autocomplete={len(music_cog._search_cache)}")
             if hasattr(self.bot, "spotify_cache"):
                 cache_parts.append(f"spotify={len(self.bot.spotify_cache)}")
             lines.append(f"**Caches:** `{', '.join(cache_parts) if cache_parts else 'none'}`")
@@ -492,7 +492,7 @@ class Admin(commands.Cog):
         status_text = "\n".join(lines)
         if len(status_text) > 3900:
             status_text = status_text[:3850].rsplit("\n", 1)[0] + "\n... Additional diagnostic details omitted."
-        text_disp = TextDisplay(status_text)
+        text_disp: TextDisplay[Any] = TextDisplay(status_text)
         container = create_card_container(text_disp)
         view = BaseCardView(timeout=60.0, author_id=interaction.user.id)
         view.add_item(container)

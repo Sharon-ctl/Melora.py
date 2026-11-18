@@ -41,6 +41,7 @@ log = logging.getLogger("musicbot")
 
 EXTENSIONS = (
     "cogs.music",
+    "cogs.queue_cmds",
     "cogs.voice_events",
     "cogs.admin",
     "cogs.library",
@@ -185,7 +186,7 @@ class MusicBot(commands.AutoShardedBot):
             allowed, _ = self.rate_limiter.acquire_autocomplete(interaction.user.id, self.cfg.owner_id)
             if not allowed:
                 try:
-                    await interaction.response.send_autocomplete([])
+                    await interaction.response.autocomplete([])
                 except Exception as exc:
                     log.debug("Autocomplete rate limit response ignored: %s", exc)
                 return False
@@ -379,7 +380,7 @@ class MusicBot(commands.AutoShardedBot):
                 log.debug("on_message ignored: author %s on cooldown (%.1fs remaining)", message.author.id, retry_after)
                 return
 
-            text = TextDisplay(messages.mention_reply_card())
+            text: TextDisplay[Any] = TextDisplay(messages.mention_reply_card())
             container = create_card_container(text)
             view = BaseCardView(timeout=60.0)
             view.add_item(container)
@@ -586,7 +587,7 @@ class MusicBot(commands.AutoShardedBot):
                 log.exception("heartbeat failed; continuing")
 
     async def _daily_backup_loop(self) -> None:
-        backup_dir = Path(self.cfg.db_path).resolve().parent / "backups"
+        backup_dir = (await asyncio.to_thread(Path(self.cfg.db_path).resolve)).parent / "backups"
         while True:
             try:
                 if self.storage is not None:
@@ -699,7 +700,7 @@ class MusicBot(commands.AutoShardedBot):
             return
         try:
             await asyncio.wait_for(work, timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning("Shutdown step timed out: %s", label)
         except asyncio.CancelledError:
             log.warning("Shutdown step cancelled: %s", label)

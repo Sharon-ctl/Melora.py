@@ -128,7 +128,10 @@ class TaskSupervisor:
             name=f"supervised:{name}",
         )
         self._tasks[name] = task
-        task.add_done_callback(lambda finished, key=name: self._finished(key, finished))
+        def _on_done(finished: asyncio.Task[Any], key: str = name) -> None:
+            self._finished(key, finished)
+
+        task.add_done_callback(_on_done)
         return task
 
     def _finished(self, name: str, task: asyncio.Task[Any]) -> None:

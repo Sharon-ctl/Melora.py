@@ -13,9 +13,10 @@ import queue
 import sqlite3
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from utils.autocomplete import UserHistoryEntry
 from utils.cache import TTLCache
@@ -451,16 +452,19 @@ class Storage:
     async def perform_daily_backup(self, backup_dir: Path | str, keep: int = 7) -> Path:
         """Create a dated backup using sqlite3's backup API and keep the latest N copies."""
         b_dir = Path(backup_dir)
-        b_dir.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(b_dir.mkdir, parents=True, exist_ok=True)
         dest = b_dir / f"bot_{time.strftime('%Y%m%d_%H%M%S')}.db"
         await self.backup(dest)
 
-        try:
+        def _rotate() -> None:
             existing = sorted(b_dir.glob("bot_*.db"), key=lambda p: p.stat().st_mtime)
             while len(existing) > keep:
                 oldest = existing.pop(0)
                 oldest.unlink(missing_ok=True)
                 log.info("Removed old database backup: %s", oldest.name)
+
+        try:
+            await asyncio.to_thread(_rotate)
         except Exception as exc:
             log.debug("Failed rotating database backups: %s", exc)
 
@@ -623,7 +627,7 @@ class Storage:
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (guild_id, requester_id, track.uri, track.title, track.artist, track.duration_ms, time.time()),
             )
-            return int(cur.lastrowid)
+            return int(cur.lastrowid or 0)
 
         return await self._run(_add, is_write=True)
 
@@ -1229,7 +1233,7 @@ class Storage:
             )
             self._history_cache.set(user_id, entries)
             return entries[:limit]
-        except (asyncio.TimeoutError, TimeoutError):
+        except TimeoutError:
             log.debug("user=%s history cache miss timed out (>1.5s)", user_id)
             return []
         except Exception as exc:

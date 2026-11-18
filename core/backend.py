@@ -92,7 +92,7 @@ class DiscordBackend:
         if voice_client is None:
             return False
         try:
-            if not voice_client.is_connected():
+            if not getattr(voice_client, "is_connected", lambda: True)():
                 return False
         except Exception as exc:
             log.debug("guild=%s voice_client.is_connected error: %s", guild_id, exc)
@@ -217,7 +217,7 @@ class DiscordBackend:
         except (discord.Forbidden, discord.NotFound) as exc:
             log.debug("notice delivery skipped (%s)", type(exc).__name__)
             return
-        except (discord.HTTPException, asyncio.TimeoutError):
+        except (TimeoutError, discord.HTTPException):
             log.debug("notice delivery failed", exc_info=True)
 
     async def send_nowplaying_card(self, channel_id: int, container: Any, view: Any) -> int | None:

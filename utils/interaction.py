@@ -29,7 +29,8 @@ def _record_ack(interaction: discord.Interaction) -> None:
     if isinstance(start_time, (int, float)) and "_ack_time" not in extras:
         ack_latency = time.monotonic() - start_time
         extras["_ack_time"] = time.monotonic()
-        cmd = interaction.command.qualified_name if getattr(interaction, "command", None) else "unknown"
+        command = getattr(interaction, "command", None)
+        cmd = command.qualified_name if command is not None else "unknown"
         from utils.timing import record_ack_latency
 
         record_ack_latency(cmd, ack_latency)
@@ -64,7 +65,7 @@ async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = Fals
             return False
         log.warning("Could not defer interaction (status %s, code %s): %s", exc.status, exc.code, exc.text)
         return False
-    except asyncio.TimeoutError:
+    except TimeoutError:
         log.info("Interaction defer timed out (expired)")
         return False
     if not ephemeral:
@@ -92,7 +93,7 @@ async def reply(
     if view is None and content and len(content.strip().splitlines()) > 1:
         from utils.components_v2 import BaseCardView, TextDisplay, create_card_container, reply_card
 
-        text_disp = TextDisplay(content)
+        text_disp: TextDisplay[Any] = TextDisplay(content)
         container = create_card_container(text_disp)
         user = getattr(interaction, "user", None)
         user_id = getattr(user, "id", 0) if user else 0
@@ -136,7 +137,7 @@ async def reply(
                 timeout=SEND_TIMEOUT,
             )
             return True
-        except (discord.NotFound, discord.HTTPException, asyncio.TimeoutError) as edit_exc:
+        except (TimeoutError, discord.NotFound, discord.HTTPException) as edit_exc:
             log.debug("Could not edit original response: %s; falling back to followup", edit_exc)
 
         await asyncio.wait_for(
@@ -148,6 +149,6 @@ async def reply(
         log.info("Interaction token expired; reply dropped")
     except discord.Forbidden:
         log.info("Missing permission to reply to an interaction")
-    except (discord.HTTPException, asyncio.TimeoutError) as exc:
+    except (TimeoutError, discord.HTTPException) as exc:
         log.warning("Failed to deliver an interaction reply: %s", exc)
     return False

@@ -14,7 +14,7 @@ from core.guild_player import GuildPlayer
 from utils import messages
 from utils.checks import guild_member, require_dj
 from utils.components_v2 import PaginatedPage, PaginatedView, reply_card
-from utils.errors import BotUserError, NotInVoice, NothingPlaying, WrongChannel
+from utils.errors import BotUserError, NothingPlaying, NotInVoice, WrongChannel
 from utils.interaction import reply
 from utils.text import clean
 
