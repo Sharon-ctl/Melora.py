@@ -21,8 +21,8 @@ from core.contracts import AudioPlayer, PlayerServices
 from core.filters import get_filter_types_for_preset, validate_and_build_eq, validate_and_build_filters
 from core.matching import SpotifyResolver
 from core.queue import LoopMode, QueueItem, TrackQueue, validate_track
-from core.storage import StoredTrack
 from core.spotify import parse_spotify_url
+from core.storage import StoredTrack
 from utils import messages
 from utils.errors import BotUserError, NodeOffline, NothingPlaying, QueueFull, TrackTooLong, UserLimitReached
 from utils.supervisor import TaskSet
@@ -147,7 +147,7 @@ class GuildPlayer:
     async def _audio_call(self, coro: Coroutine[Any, Any, Any]) -> None:
         try:
             await asyncio.wait_for(coro, timeout=AUDIO_TIMEOUT)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning("guild=%s audio call timed out", self.guild_id)
             raise NodeOffline("The audio server did not respond in time.") from None
         except BotUserError:

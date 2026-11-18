@@ -1,4 +1,4 @@
-"""Comprehensive edge-case unit tests for Phase 8.
+"""Comprehensive edge-case unit tests (mentions, pagination, help, autocomplete, cards).
 
 Covers:
 1. Bot mentions in threads, voice channels, permission checks, cooldowns, and reply pings.
@@ -30,7 +30,6 @@ from core.storage import Storage
 from main import MusicBot
 from tests.fakes import FakeBackend, FakeLoader, make_config, make_track
 from utils.components_v2 import PaginatedPage, PaginatedView
-
 
 # -----------------------------------------------------------------------------
 # 1. Mention Reply Edge Cases

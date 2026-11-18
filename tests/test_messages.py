@@ -107,7 +107,7 @@ def test_voice_status_messages_and_sanitizer():
     # Voice status texts
     # Playing with emoji
     playing_with_emoji = msg_mod.voice_status_playing("Never Gonna Give You Up", use_emoji=True)
-    assert "<:music:1558305498531631155> Never Gonna Give You Up" == playing_with_emoji
+    assert playing_with_emoji == "<:music:1558305498531631155> Never Gonna Give You Up"
     # Playing without emoji
     playing_plain = msg_mod.voice_status_playing("Never Gonna Give You Up", use_emoji=False)
     assert playing_plain == "Never Gonna Give You Up"
@@ -117,7 +117,7 @@ def test_voice_status_messages_and_sanitizer():
 
     # Idle with emoji
     idle_with_emoji = msg_mod.voice_status_idle(use_emoji=True)
-    assert "<:addmusic:1526007757826691232> Use /play to listen" == idle_with_emoji
+    assert idle_with_emoji == "<:addmusic:1526007757826691232> Use /play to listen"
     # Idle without emoji
     idle_plain = msg_mod.voice_status_idle(use_emoji=False)
     assert idle_plain == "Use /play to listen"

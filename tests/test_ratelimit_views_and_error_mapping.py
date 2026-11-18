@@ -1,4 +1,4 @@
-"""Phase 6 tests: Rate limiter, View lifecycle, Catch-all guard, Error mappings, Timing."""
+"""Tests for the rate limiter, View lifecycle, Catch-all guard, Error mappings, Timing."""
 from __future__ import annotations
 
 import asyncio
@@ -6,8 +6,8 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 import discord
+import pytest
 from discord import app_commands
 
 from utils import messages
@@ -23,7 +23,6 @@ from utils.timing import (
     record_handler_time,
     reset_http_429_count,
 )
-
 
 # ---------------------------------------------------------------------------
 # Rate Limiter Tests
@@ -312,7 +311,7 @@ def test_format_interaction_error_mappings():
     assert format_interaction_error(interaction, err_cnf) == messages.command_outdated()
 
     # 4. TimeoutError
-    err_to = asyncio.TimeoutError()
+    err_to = TimeoutError()
     assert format_interaction_error(interaction, err_to) == messages.took_too_long()
 
     # 5. ServerBusy & TookTooLong

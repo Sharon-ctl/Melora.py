@@ -34,9 +34,9 @@ class SilencePrivilegedIntentWarning(logging.Filter):
     """Silences only the warning 'Privileged message content intent is missing'."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if record.levelno == logging.WARNING and "Privileged message content intent is missing" in record.getMessage():
-            return False
-        return True
+        return not (
+            record.levelno == logging.WARNING and "Privileged message content intent is missing" in record.getMessage()
+        )
 
 
 def setup_logging(config: Config) -> None:

@@ -203,7 +203,7 @@ class VoiceStatusManager:
                         self._apply_channel_status(guild_id, channel_id, None),
                         timeout=2.0,
                     )
-                except (asyncio.TimeoutError, TimeoutError):
+                except TimeoutError:
                     log.debug("guild=%s timeout clearing voice status before leave", guild_id)
                 except Exception as exc:
                     log.debug("guild=%s error clearing voice status before leave: %s", guild_id, exc)
@@ -214,7 +214,7 @@ class VoiceStatusManager:
                         self._apply_channel_status(guild_id, channel_id, None),
                         timeout=1.0,
                     )
-                except (discord.Forbidden, discord.NotFound, asyncio.TimeoutError, TimeoutError) as exc:
+                except (discord.Forbidden, discord.NotFound, TimeoutError) as exc:
                     log.debug("guild=%s forced disconnect status clear ignored: %s", guild_id, type(exc).__name__)
                 except Exception as exc:
                     log.debug("guild=%s forced disconnect status clear error: %s", guild_id, exc)
@@ -250,7 +250,7 @@ class VoiceStatusManager:
                     asyncio.gather(*tasks, return_exceptions=True),
                     timeout=timeout,
                 )
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 log.warning("Timeout clearing voice statuses during shutdown")
             except Exception as exc:
                 log.debug("Shutdown status clearing error: %s", exc)

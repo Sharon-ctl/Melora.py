@@ -299,6 +299,10 @@ def wrong_channel(channel_id: int | None = None) -> str:
     return "**Wrong voice channel** • `Join the bot voice channel and try again`"
 
 
+def history_empty() -> str:
+    return "**No previous track** • `Nothing has played before this`"
+
+
 def nothing_playing() -> str:
     return "**Nothing is playing** • `Use /play to start`"
 

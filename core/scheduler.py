@@ -120,7 +120,7 @@ class CentralScheduler:
                 self._wakeup_event.clear()
                 try:
                     await asyncio.wait_for(self._wakeup_event.wait(), timeout=wait_time)
-                except (asyncio.TimeoutError, TimeoutError):
+                except TimeoutError:
                     continue
             except asyncio.CancelledError:
                 break

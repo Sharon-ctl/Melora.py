@@ -85,7 +85,7 @@ def secondary_button(
     callback: Any | None = None,
 ) -> Button[Any]:
     """Create a button guaranteed to use ButtonStyle.secondary."""
-    btn = Button(
+    btn: Button[Any] = Button(
         style=ButtonStyle.secondary,
         label=label,
         disabled=disabled,
@@ -168,6 +168,7 @@ class BaseCardView(LayoutView):
         self.kind: str = kind
         self.channel_id: int | None = None
         self.message_id: int | None = None
+        self.message: discord.Message | None = None
         self.interaction: discord.Interaction | None = None
         self.is_ephemeral: bool = False
         self._client: discord.Client | None = None
@@ -392,7 +393,7 @@ class PaginatedView(BaseCardView):
 
         lines.append(f"Page {self.current_page} of {self.total_pages}")
 
-        text_display = TextDisplay("\n".join(lines))
+        text_display: TextDisplay[Any] = TextDisplay("\n".join(lines))
         self._prev_btn = secondary_button("<", disabled=(self.current_page <= 1), callback=self._on_prev)
         self._next_btn = secondary_button(">", disabled=(self.current_page >= self.total_pages), callback=self._on_next)
         row = ActionRow(self._prev_btn, self._next_btn)
@@ -423,7 +424,7 @@ class PaginatedView(BaseCardView):
 def create_info_card(title: str, text: str) -> BaseCardView:
     """Build a standard info card view with a single neutral gray container."""
     content = f"**{title}**\n\n{text}" if not title.startswith("**") else f"{title}\n\n{text}"
-    disp = TextDisplay(content)
+    disp: TextDisplay[Any] = TextDisplay(content)
     container = create_card_container(disp)
     view = BaseCardView()
     view.add_item(container)
@@ -477,7 +478,7 @@ async def reply_card(
                     interaction.edit_original_response(view=view),
                     timeout=CARD_SEND_TIMEOUT,
                 )
-            except (discord.NotFound, discord.HTTPException, asyncio.TimeoutError) as exc:
+            except (TimeoutError, discord.NotFound, discord.HTTPException) as exc:
                 log.debug("Could not edit original card response: %s; falling back to followup", exc)
                 try:
                     sent_msg = await asyncio.wait_for(
@@ -500,7 +501,7 @@ async def reply_card(
         log.info("Interaction token expired; card reply dropped")
     except discord.Forbidden:
         log.info("Missing permission to reply with a card")
-    except (discord.HTTPException, asyncio.TimeoutError) as exc:
+    except (TimeoutError, discord.HTTPException) as exc:
         log.warning("Failed to deliver interaction card reply: %s", exc)
     return False
 
@@ -542,7 +543,7 @@ def build_nowplaying_action_row(
 
     # 1. Loop
     loop_emoji = emojis.get("loop")
-    btn_loop = Button(
+    btn_loop: Button[Any] = Button(
         style=ButtonStyle.secondary,
         emoji=loop_emoji,
         label=None if loop_emoji else "Loop",
@@ -553,7 +554,7 @@ def build_nowplaying_action_row(
 
     # 2. Previous
     prev_emoji = emojis.get("previous")
-    btn_prev = Button(
+    btn_prev: Button[Any] = Button(
         style=ButtonStyle.secondary,
         emoji=prev_emoji,
         label=None if prev_emoji else "Previous",
@@ -570,7 +571,7 @@ def build_nowplaying_action_row(
     else:
         pr_emoji = emojis.get("pause")
         pr_label = None if pr_emoji else "Pause"
-    btn_pause_resume = Button(
+    btn_pause_resume: Button[Any] = Button(
         style=ButtonStyle.secondary,
         emoji=pr_emoji,
         label=pr_label,
@@ -581,7 +582,7 @@ def build_nowplaying_action_row(
 
     # 4. Skip
     skip_emoji = emojis.get("skip")
-    btn_skip = Button(
+    btn_skip: Button[Any] = Button(
         style=ButtonStyle.secondary,
         emoji=skip_emoji,
         label=None if skip_emoji else "Skip",
@@ -592,7 +593,7 @@ def build_nowplaying_action_row(
 
     # 5. Stop (stop button allows danger style)
     stop_emoji = emojis.get("stop")
-    btn_stop = Button(
+    btn_stop: Button[Any] = Button(
         style=ButtonStyle.danger,  # stop button
         emoji=stop_emoji,
         label=None if stop_emoji else "Stop",
@@ -658,7 +659,7 @@ def build_nowplaying_container(
     state_str = "**Paused**" if is_paused else "**Playing**"
     header_text = f"{music_markup} {state_str}" if music_markup else state_str
 
-    section = Section(
+    section: Section[Any] = Section(
         TextDisplay(header_text),
         TextDisplay("\n".join(content_lines)),
         accessory=Thumbnail(art_url),
@@ -825,7 +826,7 @@ class NowPlayingView(LayoutView):
 
         if channel.id != player.voice_channel_id:
             await interaction.response.send_message(
-                messages.different_voice_channel(), ephemeral=True, allowed_mentions=_NO_MENTIONS
+                messages.wrong_channel(player.voice_channel_id), ephemeral=True, allowed_mentions=_NO_MENTIONS
             )
             return False
 
@@ -849,12 +850,11 @@ class NowPlayingView(LayoutView):
             has_role = False
             if dj_role_id and hasattr(member, "roles"):
                 has_role = any(r.id == dj_role_id for r in member.roles)
-            if dj_role_id or dj_only:
-                if not (is_admin or is_owner or has_role):
-                    await interaction.response.send_message(
-                        messages.dj_required(), ephemeral=True, allowed_mentions=_NO_MENTIONS
-                    )
-                    return False
+            if (dj_role_id or dj_only) and not (is_admin or is_owner or has_role):
+                await interaction.response.send_message(
+                    messages.dj_required(), ephemeral=True, allowed_mentions=_NO_MENTIONS
+                )
+                return False
 
         return True
 

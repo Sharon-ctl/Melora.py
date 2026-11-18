@@ -1,4 +1,4 @@
-"""Unit tests for Phase 7: Storage at Scale.
+"""Unit tests for storage at scale (caching, coalescing, indexes, batching).
 
 Verifies:
 - Coalesce writes in the worker thread (latest-wins per guild snapshot)

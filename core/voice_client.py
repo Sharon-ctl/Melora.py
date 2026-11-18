@@ -27,7 +27,7 @@ class LavalinkVoiceClient(discord.VoiceProtocol):
 
     @property
     def guild(self) -> discord.Guild:
-        return self.channel.guild  # type: ignore[union-attr]
+        return self.channel.guild  # type: ignore[union-attr,attr-defined]
 
     @property
     def channel_id(self) -> int | None:
@@ -37,10 +37,10 @@ class LavalinkVoiceClient(discord.VoiceProtocol):
         """True while Discord reports the bot in a voice channel and we have not torn down."""
         return (not self._destroyed) and self._channel_id is not None
 
-    async def on_voice_server_update(self, data: dict[str, Any]) -> None:
+    async def on_voice_server_update(self, data: dict[str, Any]) -> None:  # type: ignore[override]
         await self._lavalink.voice_update_handler({"t": "VOICE_SERVER_UPDATE", "d": data})
 
-    async def on_voice_state_update(self, data: dict[str, Any]) -> None:
+    async def on_voice_state_update(self, data: dict[str, Any]) -> None:  # type: ignore[override]
         raw_channel_id = data.get("channel_id")
         await self._lavalink.voice_update_handler({"t": "VOICE_STATE_UPDATE", "d": data})
         if not raw_channel_id:
@@ -60,7 +60,11 @@ class LavalinkVoiceClient(discord.VoiceProtocol):
 
     async def connect(self, *, timeout: float, reconnect: bool, self_deaf: bool = False, self_mute: bool = False) -> None:
         self._ready.clear()
-        await self.guild.change_voice_state(channel=self.channel, self_mute=self_mute, self_deaf=self_deaf)
+        await self.guild.change_voice_state(
+            channel=self.channel,  # type: ignore[arg-type]
+            self_mute=self_mute,
+            self_deaf=self_deaf,
+        )
         await asyncio.wait_for(self._ready.wait(), timeout=min(timeout, READY_TIMEOUT))
 
     async def disconnect(self, *, force: bool = False) -> None:

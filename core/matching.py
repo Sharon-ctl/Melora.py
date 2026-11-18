@@ -139,7 +139,7 @@ class CandidateScorer:
         # 5. Penalties for live, remix, cover, etc.
         target_lower = target_title.lower()
         penalties = 0.0
-        for kw, kw_pat in self._kw_patterns:
+        for _kw, kw_pat in self._kw_patterns:
             # If keyword is in candidate title or author but not in the Spotify target title
             kw_match = bool(kw_pat.search(cand_title) or kw_pat.search(cand_author))
             if kw_match and not kw_pat.search(target_lower):

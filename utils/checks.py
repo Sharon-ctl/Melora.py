@@ -1,10 +1,11 @@
 """Reusable command checks. They raise BotUserError subclasses with clear messages."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import time
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 import discord
-import time
 from discord import app_commands
 
 from config import Config
@@ -63,7 +64,7 @@ def require_dj(
     raise DJRequired()
 
 
-def owner_only() -> app_commands.Check:
+def owner_only() -> Callable[[Any], Any]:
     """Slash command check restricting a command to the configured owner."""
 
     async def predicate(interaction: discord.Interaction) -> bool:

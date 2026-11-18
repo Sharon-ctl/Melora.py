@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import io
-from typing import Sequence
+from collections.abc import Sequence
 
 from PIL import Image, ImageDraw, ImageFont
-
 
 WIDTH, HEIGHT = 800, 500
 PINK = (255, 228, 235)
@@ -33,7 +32,9 @@ def _font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFon
     return ImageFont.load_default()
 
 
-def _fit(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, width: int) -> str:
+def _fit(
+    draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont | ImageFont.ImageFont, width: int
+) -> str:
     text = str(text).replace("\n", " ").strip()
     if draw.textbbox((0, 0), text, font=font)[2] <= width:
         return text
@@ -53,6 +54,7 @@ def render_profile(
     """Render the profile as an 800x500 PNG image for a Discord attachment."""
     image = Image.new("RGB", (WIDTH, HEIGHT))
     pixels = image.load()
+    assert pixels is not None  # a freshly created RGB image always has pixel access
     for y in range(HEIGHT):
         for x in range(WIDTH):
             ratio = (x / WIDTH + y / HEIGHT) / 2
@@ -109,6 +111,7 @@ def render_stats(
     """Render the personal listening stats canvas used by the Java bot."""
     image = Image.new("RGB", (WIDTH, HEIGHT))
     pixels = image.load()
+    assert pixels is not None  # a freshly created RGB image always has pixel access
     for y in range(HEIGHT):
         ratio = y / HEIGHT
         color = tuple(round(PINK[i] * (1 - ratio) + WHITE[i] * ratio) for i in range(3))

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import discord
 from discord import app_commands
@@ -61,7 +61,7 @@ class Requests(commands.Cog):
             raise WrongChannel(channel_id=player.voice_channel_id)
         if not await safe_defer(interaction, ephemeral=True):
             return
-        music = self.bot.get_cog("Music")
+        music: Any = self.bot.get_cog("Music")
         if music is None:
             raise BotUserError("Music search is temporarily unavailable.")
         items, _, _, _ = await music._load_query_items(

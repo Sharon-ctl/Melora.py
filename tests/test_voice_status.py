@@ -1,4 +1,4 @@
-"""Comprehensive tests for Voice Channel Status (Phase 3).
+"""Comprehensive tests for Voice Channel Status.
 
 Verifies:
 - State machine for every transition (playing, paused, resume, idle, destroyed, none)

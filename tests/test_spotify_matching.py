@@ -72,7 +72,7 @@ def test_clean_spotify_title():
 
 
 def test_golden_spotify_matches():
-    with open(GOLDEN_PATH, "r", encoding="utf-8") as f:
+    with open(GOLDEN_PATH, encoding="utf-8") as f:
         cases = json.load(f)
 
     scorer = CandidateScorer()

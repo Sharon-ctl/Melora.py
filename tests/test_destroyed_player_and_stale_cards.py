@@ -1,4 +1,4 @@
-"""Regression tests for Phase 5 defect hunt.
+"""Regression tests for destroyed players and stale now-playing cards.
 
 Covers:
 1. Rejection of skip, vote_skip, pause, resume, seek, replay, and previous on destroyed player.

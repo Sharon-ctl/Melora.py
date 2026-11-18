@@ -1,11 +1,12 @@
-"""Unit tests for Phase 6: Owner commands, privacy, backups, and JSON export."""
+"""Unit tests for owner commands, privacy, backups, and JSON export."""
 from __future__ import annotations
 
 import json
 from pathlib import Path
+
 import pytest
 
-from core.storage import Storage, StoredTrack, StorageError
+from core.storage import Storage, StorageError, StoredTrack
 from scripts.export_json import export_database
 from utils.errors import ErrorRingBuffer
 
@@ -192,7 +193,7 @@ async def test_json_export_script(tmp_path: Path):
     exported = export_database(db_path, out_json)
     assert exported.exists()
 
-    with open(exported, "r", encoding="utf-8") as f:
+    with open(exported, encoding="utf-8") as f:
         data = json.load(f)
 
     assert "guild_settings" in data

@@ -31,6 +31,10 @@ jobs:
         run: |
           ruff check .
 
+      - name: Static type checking (mypy)
+        run: |
+          mypy cogs core utils main.py config.py logging_setup.py
+
       - name: Bytecode compilation check
         run: |
           python -m compileall -q .
@@ -39,6 +43,6 @@ jobs:
         run: |
           pytest
 
-      - name: Run Phase 8 audit checks
+      - name: Run repository audit checks
         run: |
-          python scripts/verify_phase8.py
+          python scripts/verify_repo.py

@@ -22,9 +22,9 @@ class DiscordRateLimitFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         global _HTTP_429_COUNT
         msg = record.getMessage().lower()
-        if "rate limit" in msg or "429" in msg or "retrying in" in msg:
-            if _HTTP_429_COUNT < _MAX_429_COUNT:
-                _HTTP_429_COUNT += 1
+        is_rate_limit = "rate limit" in msg or "429" in msg or "retrying in" in msg
+        if is_rate_limit and _HTTP_429_COUNT < _MAX_429_COUNT:
+            _HTTP_429_COUNT += 1
         return True
 
 

@@ -1,4 +1,4 @@
-"""Unit tests for Phase 5: Gateway and Library Tuning.
+"""Unit tests for gateway tuning and the mention reply feature.
 
 Verifies:
 - discord.py speedups (orjson, aiohttp speedups) are installed and actively used

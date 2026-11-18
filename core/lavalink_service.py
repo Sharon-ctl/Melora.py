@@ -20,7 +20,7 @@ from lavalink.server import LoadResult, LoadType
 
 from config import Config
 from utils.cache import TTLCache
-from utils.errors import BotUserError, LoadFailed, NoMatches, NodeOffline
+from utils.errors import BotUserError, LoadFailed, NodeOffline, NoMatches
 from utils.text import clean
 
 log = logging.getLogger(__name__)
@@ -70,7 +70,7 @@ class LavalinkService:
             try:
                 await asyncio.wait_for(entry[0].acquire(), timeout=3.0)
                 acquired = True
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 from utils.errors import ServerBusy
 
                 raise ServerBusy() from None
@@ -119,7 +119,7 @@ class LavalinkService:
         try:
             try:
                 await asyncio.wait_for(self._semaphore.acquire(), timeout=3.0)
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 from utils.errors import ServerBusy
 
                 raise ServerBusy() from None
@@ -131,7 +131,7 @@ class LavalinkService:
                     err_msg = getattr(err, "message", None) if err else None
                     err_sev = getattr(err, "severity", None) if err else None
                     sev_str = str(err_sev) if err_sev is not None else None
-                    exc = LoadFailed(
+                    exc: BotUserError = LoadFailed(
                         cause=err_msg or "Lavalink load error",
                         severity=sev_str,
                         source=source_name,
@@ -157,7 +157,7 @@ class LavalinkService:
                 if not flight_fut.done():
                     flight_fut.set_result(result)
                 return result
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 exc = LoadFailed(
                     "The audio server took too long to respond.",
                     cause="Audio server timeout",
@@ -244,6 +244,7 @@ class LavalinkService:
             raise LoadFailed("The search took too long. Try again.") from None
 
     async def _load_locked(self, query: str) -> LoadOutcome:
+        attempts: list[tuple[str, str, bool, str | None]]
         if URL_RE.match(query):
             attempts = [(query, "direct", False, None)]
         else:
