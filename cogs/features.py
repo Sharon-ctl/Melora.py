@@ -87,13 +87,29 @@ def _parse_mewsic(data: bytes) -> tuple[str, list[StoredTrack]]:
         artist = clean(str(row.get("artist") or ""))[:100]
         if not title:
             continue
+        # Resolve the best playback URI we can from the Mewsic track record.
+        # source_id may be a bare YouTube video ID, a full URL, or null.
         source_id = str(row.get("source_id") or "")
-        uri = f"https://www.youtube.com/watch?v={source_id}" if YOUTUBE_ID.fullmatch(source_id) else ""
+        uri = ""
+        if YOUTUBE_ID.fullmatch(source_id):
+            # Bare 11-char YouTube video ID – build a direct watch URL.
+            uri = f"https://www.youtube.com/watch?v={source_id}"
+        else:
+            # source_id may be a full Apple Music / iTunes / jiosaavn URL or
+            # another provider URL that Lavalink cannot resolve directly.
+            # Try to extract a YouTube video ID from it before giving up.
+            _YT_URL_RE = re.compile(
+                r"(?:youtu\.be/|youtube\.com/(?:watch\?v=|shorts/|embed/))([A-Za-z0-9_-]{11})"
+            )
+            yt_match = _YT_URL_RE.search(source_id)
+            if yt_match:
+                uri = f"https://www.youtube.com/watch?v={yt_match.group(1)}"
+            # Otherwise leave uri="" – the item will be found by title/artist search.
         try:
             duration = max(0, min(int(float(row.get("duration") or 0) * 1000), 86_400_000))
         except (TypeError, ValueError, OverflowError):
             duration = 0
-        # Metadata without a validated source id is resolved by title/artist search.
+        # Metadata without a resolvable URI is found by title/artist search.
         out.append(StoredTrack(uri=uri, title=title, artist=artist, duration_ms=duration))
     if not out:
         raise ValueError("No usable tracks were found in that file.")
@@ -464,8 +480,12 @@ class Features(commands.Cog):
                         t.duration_ms,
                         member.id,
                         artist=t.artist,
-                        uri=t.uri,
-                        query=t.uri or f"ytsearch:{t.artist} - {t.title}",
+                        # Leave uri blank so the lazy-resolution path in guild_player
+                        # falls through to `query` instead of loading the stored URI
+                        # directly.  That way LavalinkService.load() uses whatever
+                        # DEFAULT_SEARCH_SOURCE is configured in .env (e.g. ytmsearch).
+                        uri="",
+                        query=(f"{t.artist} - {t.title}" if t.artist else t.title),
                         requester_avatar_url=extract_user_avatar_url(member),
                     )
                     for t in tracks
