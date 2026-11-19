@@ -92,7 +92,7 @@ def _parse_mewsic(data: bytes) -> tuple[str, list[StoredTrack]]:
         source_id = str(row.get("source_id") or "")
         uri = ""
         if YOUTUBE_ID.fullmatch(source_id):
-            # Bare 11-char YouTube video ID – build a direct watch URL.
+            # Bare 11-char YouTube video ID - build a direct watch URL.
             uri = f"https://www.youtube.com/watch?v={source_id}"
         else:
             # source_id may be a full Apple Music / iTunes / jiosaavn URL or
@@ -104,7 +104,7 @@ def _parse_mewsic(data: bytes) -> tuple[str, list[StoredTrack]]:
             yt_match = _YT_URL_RE.search(source_id)
             if yt_match:
                 uri = f"https://www.youtube.com/watch?v={yt_match.group(1)}"
-            # Otherwise leave uri="" – the item will be found by title/artist search.
+            # Otherwise leave uri="" - the item will be found by title/artist search.
         try:
             duration = max(0, min(int(float(row.get("duration") or 0) * 1000), 86_400_000))
         except (TypeError, ValueError, OverflowError):
