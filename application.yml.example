@@ -19,7 +19,7 @@ lavalink:
     - dependency: "com.github.topi314.lavalyrics:lavalyrics-plugin:1.1.0"
       snapshot: false
   server:
-    password: "change-me"
+    password: "123"
     sources:
       youtube: false
       soundcloud: true
@@ -43,17 +43,17 @@ lavalink:
 
     # Leave CPU headroom per player; reduce audio processing cost while
     # keeping the Opus encoding quality high for normal music playback.
-    opusEncodingQuality: 8
-    resamplingQuality: LOW
+    opusEncodingQuality: 10
+    resamplingQuality: HIGH
 
     # Lavalink's 400 ms NAS buffer is a responsive default; the 5 s frame
     # buffer provides room for brief source/network jitter.
-    bufferDurationMs: 400
+    bufferDurationMs: 600
     frameBufferDurationMs: 5000
     trackStuckThresholdMs: 10000
     useSeekGhosting: true
     # Standard update cadence keeps player state responsive without excess WS traffic.
-    playerUpdateInterval: 5
+    playerUpdateInterval: 10
     # Optional, for nodes with many players and GC warnings in the log.
     # Fewer allocations per player; the cost is non-instant volume changes.
     # nonAllocatingFrameBuffer: true
