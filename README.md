@@ -82,10 +82,17 @@ server:
 
 lavalink:
   plugins:
+    # The pinned YouTube snapshot includes a playback fix; update it deliberately.
     - dependency: "dev.lavalink.youtube:youtube-plugin:f45bbb7aebfcbc1c553769e04af6cd43afa8b7c3"
       snapshot: true
+    - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.3"
+      snapshot: false
+    - dependency: "com.github.topi314.lavasearch:lavasearch-plugin:1.0.0"
+      snapshot: false
+    - dependency: "com.github.topi314.lavalyrics:lavalyrics-plugin:1.1.0"
+      snapshot: false
   server:
-    password: "change-me"
+    password: "123"
     sources:
       youtube: false
       soundcloud: true
@@ -107,16 +114,18 @@ lavalink:
       channelMix: true
       lowPass: true
 
-    # Audio quality. This is the main CPU cost per player. If a node's CPU
-    # ever saturates, drop resamplingQuality to MEDIUM first.
+    # Leave CPU headroom per player; reduce audio processing cost while
+    # keeping the Opus encoding quality high for normal music playback.
     opusEncodingQuality: 10
     resamplingQuality: HIGH
 
-    # Smoothness and memory per player
+    # Lavalink's 400 ms NAS buffer is a responsive default; the 5 s frame
+    # buffer provides room for brief source/network jitter.
     bufferDurationMs: 600
     frameBufferDurationMs: 5000
     trackStuckThresholdMs: 10000
     useSeekGhosting: true
+    # Standard update cadence keeps player state responsive without excess WS traffic.
     playerUpdateInterval: 10
     # Optional, for nodes with many players and GC warnings in the log.
     # Fewer allocations per player; the cost is non-instant volume changes.
@@ -124,9 +133,43 @@ lavalink:
 
     youtubeSearchEnabled: true
     soundcloudSearchEnabled: true
+    # Three pages of 100 keep playlist REST responses bounded; the bot then
+    # applies its own MAX_PLAYLIST_TRACKS limit before queue insertion.
+    youtubePlaylistLoadLimit: 3
     gc-warnings: true
 
 plugins:
+  lavasrc:
+    # Mirror Spotify/ISRC metadata to YouTube Music. The Spotify source below
+    # stays disabled until a Spotify app client ID/secret are configured.
+    providers:
+      - 'ytmsearch:"%ISRC%"'
+      - "ytmsearch:%QUERY%"
+    sources:
+      spotify: false
+      applemusic: false
+      deezer: false
+      yandexmusic: false
+      flowerytts: false
+      youtube: true
+      vkmusic: false
+      tidal: false
+      qobuz: false
+      ytdlp: false
+      jiosaavn: false
+    lyrics-sources:
+      spotify: false
+      deezer: false
+      youtube: true
+      yandexmusic: false
+      vkmusic: false
+      lrcLib: true
+    youtube:
+      countryCode: "US"
+      language: "en"
+  lavalyrics:
+    sources:
+      - youtube
   youtube:
     enabled: true
     allowSearch: true
@@ -152,7 +195,8 @@ logging:
   level:
     root: INFO
     lavalink: INFO
-    dev.lavalink.youtube.http.YoutubeOauth2Handler: INFO
+    # Switch to INFO temporarily only when completing the YouTube OAuth device flow.
+    dev.lavalink.youtube.http.YoutubeOauth2Handler: WARN
     dev.lavalink.youtube.clients.skeleton.StreamingNonMusicClient: ERROR
   request:
     # One log line per API request is heavy I/O with many players.
@@ -160,7 +204,7 @@ logging:
     enabled: false
     includeClientInfo: true
     includeHeaders: false
-    includeQueryString: true
+    includeQueryString: false
     includePayload: false
     maxPayloadLength: 1000
   logback:
